@@ -13,5 +13,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Expose port
 EXPOSE 8080
 
-# Start gunicorn - models will download on first startup via app.py
-CMD gunicorn --bind 0.0.0.0:$PORT --timeout 3600 --workers 1 --threads 4 --worker-class gthread app:app
+# Use shell form to allow variable expansion
+CMD gunicorn --bind 0.0.0.0:${PORT:-8080} --timeout 3600 --workers 1 --threads 4 --worker-class gthread app:app
