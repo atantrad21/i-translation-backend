@@ -214,18 +214,29 @@ def download_and_load_models():
             
             output_path = f'/tmp/generator_{name}_800ckpt.h5'
             
-            # Download with retry logic
+            # Download using gdown CLI (more reliable than Python API)
             max_retries = 3
             for attempt in range(max_retries):
                 try:
                     logger.info(f"  Downloading (attempt {attempt + 1}/{max_retries})...")
-                    # Use file_id directly instead of URL
-                    gdown.download(id=file_id, output=output_path, quiet=False)
+                    
+                    # Use subprocess to call gdown CLI directly
+                    import subprocess
+                    result = subprocess.run(
+                        ['gdown', file_id, '-O', output_path],
+                        capture_output=True,
+                        text=True,
+                        timeout=600  # 10 minute timeout per file
+                    )
+                    
+                    if result.returncode != 0:
+                        raise Exception(f"gdown CLI failed: {result.stderr}")
                     
                     # Verify download
                     if os.path.exists(output_path):
                         file_size = os.path.getsize(output_path) / (1024 * 1024)
                         logger.info(f"  ✅ Downloaded: {file_size:.2f} MB")
+                        logger.info(f"  Output: {result.stdout[:200]}")
                         break
                     else:
                         raise Exception("File not found after download")
