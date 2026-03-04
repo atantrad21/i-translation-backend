@@ -1,20 +1,18 @@
-# I-Translation Backend - Medical Image Converter v6.0
-# FORCE REBUILD - Complete fresh build
-FROM python:3.9-slim
+# I-Translation v7.0 - CACHE BUSTER
+# Using specific Python version to force fresh build
+FROM python:3.9.20-slim
 
-# Set working directory
 WORKDIR /app
 
-# Copy application files
+# Copy files
 COPY app.py .
 COPY requirements.txt .
 
-# Install dependencies
+# Install with no cache
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Expose port
 EXPOSE 8080
 
-# Start application - PORT variable expansion via shell
-CMD sh -c "echo 'Starting on PORT:' $PORT && gunicorn --bind 0.0.0.0:${PORT:-8080} --timeout 3600 --workers 1 --threads 4 --worker-class gthread app:app"
+# Start with PORT expansion
+CMD ["sh", "-c", "echo 'v7.0 Starting on PORT:' $PORT && gunicorn --bind 0.0.0.0:${PORT:-8080} --timeout 3600 --workers 1 --threads 4 --worker-class gthread app:app"]
