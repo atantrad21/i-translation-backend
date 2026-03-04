@@ -214,29 +214,22 @@ def download_and_load_models():
             
             output_path = f'/tmp/generator_{name}_800ckpt.h5'
             
-            # Download using gdown CLI (more reliable than Python API)
+            # Download using gdown 4.6.0 (stable version)
             max_retries = 3
             for attempt in range(max_retries):
                 try:
                     logger.info(f"  Downloading (attempt {attempt + 1}/{max_retries})...")
                     
-                    # Use subprocess to call gdown CLI directly
-                    import subprocess
-                    result = subprocess.run(
-                        ['gdown', file_id, '-O', output_path],
-                        capture_output=True,
-                        text=True,
-                        timeout=600  # 10 minute timeout per file
-                    )
+                    # Construct proper Google Drive URL for gdown 4.6.0
+                    url = f"https://drive.google.com/uc?id={file_id}"
                     
-                    if result.returncode != 0:
-                        raise Exception(f"gdown CLI failed: {result.stderr}")
+                    # Use gdown.download with proper URL format
+                    gdown.download(url, output_path, quiet=False)
                     
                     # Verify download
                     if os.path.exists(output_path):
                         file_size = os.path.getsize(output_path) / (1024 * 1024)
                         logger.info(f"  ✅ Downloaded: {file_size:.2f} MB")
-                        logger.info(f"  Output: {result.stdout[:200]}")
                         break
                     else:
                         raise Exception("File not found after download")
@@ -244,6 +237,9 @@ def download_and_load_models():
                 except Exception as e:
                     if attempt < max_retries - 1:
                         logger.warning(f"  ⚠️ Download failed: {str(e)}. Retrying...")
+                        # Clean up partial download
+                        if os.path.exists(output_path):
+                            os.remove(output_path)
                     else:
                         raise Exception(f"Failed to download after {max_retries} attempts: {str(e)}")
             
