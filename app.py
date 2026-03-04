@@ -212,14 +212,14 @@ def download_and_load_models():
             logger.info("-" * 60)
             
             output_path = f'/tmp/generator_{name}_800ckpt.h5'
-            url = f'https://drive.google.com/uc?id={file_id}'
             
             # Download with retry logic
             max_retries = 3
             for attempt in range(max_retries):
                 try:
                     logger.info(f"  Downloading (attempt {attempt + 1}/{max_retries})...")
-                    gdown.download(url, output_path, quiet=False)
+                    # Use file_id directly instead of URL
+                    gdown.download(id=file_id, output=output_path, quiet=False)
                     
                     # Verify download
                     if os.path.exists(output_path):
