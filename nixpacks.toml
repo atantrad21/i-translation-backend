@@ -1,0 +1,12 @@
+[phases.setup]
+nixPkgs = ['python39', 'python39Packages.pip']
+
+[phases.install]
+cmds = [
+    'python3.9 -m venv /opt/venv',
+    '. /opt/venv/bin/activate && pip install --upgrade pip',
+    '. /opt/venv/bin/activate && pip install -r requirements.txt'
+]
+
+[start]
+cmd = 'gunicorn --bind 0.0.0.0:$PORT --timeout 3600 --workers 1 --threads 4 --worker-class gthread app:app'
