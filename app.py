@@ -197,13 +197,26 @@ def download_and_load_models():
         # Import gdown for Google Drive downloads
         try:
             import gdown
-            logger.info("✅ gdown library imported")
+            gdown_version = gdown.__version__ if hasattr(gdown, '__version__') else 'unknown'
+            logger.info(f"✅ gdown library imported (version: {gdown_version})")
+            
+            # CRITICAL: Verify gdown version
+            if gdown_version.startswith('4.7'):
+                logger.error(f"❌ WRONG GDOWN VERSION: {gdown_version} (4.7.x is broken!)")
+                logger.error("❌ Forcing reinstall of gdown 4.6.0...")
+                import subprocess
+                subprocess.check_call([sys.executable, "-m", "pip", "uninstall", "-y", "gdown"])
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "gdown==4.6.0"])
+                import importlib
+                importlib.reload(gdown)
+                logger.info(f"✅ gdown 4.6.0 installed successfully")
+            
         except ImportError:
             logger.error("❌ gdown not installed. Installing...")
             import subprocess
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "gdown"])
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "gdown==4.6.0"])
             import gdown
-            logger.info("✅ gdown installed successfully")
+            logger.info("✅ gdown 4.6.0 installed successfully")
         
         logger.info("\n📥 DOWNLOADING 800+ CHECKPOINT MODELS FROM GOOGLE DRIVE")
         logger.info(f"Total Models: {len(FILE_IDS)}")
