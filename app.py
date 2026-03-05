@@ -222,7 +222,7 @@ def preprocess_image(image_bytes):
 def postprocess_image(tensor):
     """Convert model output tensor back to PNG image"""
     # Remove batch dimension
-    img_array = tensor<sup>0</sup>
+    tensor<sup>0</sup>
     
     # Denormalize from [-1, 1] to [0, 255]
     img_array = ((img_array + 1.0) * 127.5).astype(np.uint8)
