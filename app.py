@@ -222,7 +222,7 @@ def preprocess_image(image_bytes):
 def postprocess_image(tensor):
     """Convert model output tensor back to PNG image"""
     # Remove batch dimension
-    tensor<sup>0</sup>
+    img_array = tensor<sup>0</sup>
     
     # Denormalize from [-1, 1] to [0, 255]
     img_array = ((img_array + 1.0) * 127.5).astype(np.uint8)
@@ -233,7 +233,7 @@ def postprocess_image(tensor):
     # Create PIL image (64x64)
     img = Image.fromarray(img_array, mode='L')
     
-    # UPSCALE 64x64 → 256x256 using LANCZOS for high quality
+    # UPSCALE 64x64 to 256x256 using LANCZOS for high quality
     # This reveals checkpoint 652 quality by interpolating learned features
     img_upscaled = img.resize((256, 256), Image.LANCZOS)
     
@@ -354,11 +354,3 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     logger.info(f"Starting server on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
-📄 Complete Requirements - requirements.txt
-flask==3.0.0
-flask-cors==4.0.0
-gunicorn==21.2.0
-tensorflow==2.15.0
-pillow==10.1.0
-numpy==1.24.3
-gdown==4.7.1
