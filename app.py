@@ -1,22 +1,12 @@
-from flask import Flask, request, jsonify, send_file
-from flask_cors import CORS
+import gradio as gr
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 import numpy as np
 from PIL import Image
-import io
-import zipfile
 import os
-import logging
-import requests
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-app = Flask(__name__)
-CORS(app)
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024
+import zipfile
+import io
 
 class InstanceNormalization(layers.Layer):
     def __init__(self, epsilon=1e-5, **kwargs):
@@ -36,6 +26,7 @@ class InstanceNormalization(layers.Layer):
             initializer='zeros',
             trainable=True
         )
+        super(InstanceNormalization, self).build(input_shape)
 
     def call(self, inputs):
         mean, variance = tf.nn.moments(inputs, axes=[1, 2], keepdims=True)
@@ -43,217 +34,201 @@ class InstanceNormalization(layers.Layer):
         return self.scale * normalized + self.offset
 
     def get_config(self):
-        config = super().get_config()
+        config = super(InstanceNormalization, self).get_config()
         config.update({"epsilon": self.epsilon})
         return config
 
-def downsample(filters, size, apply_norm=True):
+def downsample(filters, size, apply_norm=True, name=None):
     initializer = tf.random_normal_initializer(0., 0.02)
-    result = tf.keras.Sequential()
-    result.add(tf.keras.layers.Conv2D(filters, size, strides=2, padding='same',
-                                      kernel_initializer=initializer, use_bias=False))
+    result = keras.Sequential(name=name)
+    result.add(layers.Conv2D(filters, size, strides=2, padding='same',
+                            kernel_initializer=initializer, use_bias=False,
+                            name=f'{name}_conv' if name else None))
     if apply_norm:
-        result.add(InstanceNormalization())
-    result.add(tf.keras.layers.LeakyReLU())
+        result.add(InstanceNormalization(name=f'{name}_norm' if name else None))
+    result.add(layers.LeakyReLU(name=f'{name}_leaky' if name else None))
     return result
 
-def upsample(filters, size, apply_dropout=False):
+def upsample(filters, size, apply_dropout=False, name=None):
     initializer = tf.random_normal_initializer(0., 0.02)
-    result = tf.keras.Sequential()
-    result.add(tf.keras.layers.Conv2DTranspose(filters, size, strides=2, padding='same',
-                                               kernel_initializer=initializer, use_bias=False))
-    result.add(InstanceNormalization())
+    result = keras.Sequential(name=name)
+    result.add(layers.Conv2DTranspose(filters, size, strides=2, padding='same',
+                                     kernel_initializer=initializer, use_bias=False,
+                                     name=f'{name}_conv' if name else None))
+    result.add(InstanceNormalization(name=f'{name}_norm' if name else None))
     if apply_dropout:
-        result.add(tf.keras.layers.Dropout(0.5))
-    result.add(tf.keras.layers.ReLU())
+        result.add(layers.Dropout(0.5, name=f'{name}_dropout' if name else None))
+    result.add(layers.ReLU(name=f'{name}_relu' if name else None))
     return result
 
-def unet_generator():
+def unet_generator(output_channels=1, name='generator'):
+    inputs = layers.Input(shape=[64, 64, 1], name=f'{name}_input')
+
+    # UPDATED: Match the down_stack from the training notebook (6 layers)
     down_stack = [
-        downsample(128, 4, False),
-        downsample(256, 4),
-        downsample(256, 4),
-        downsample(256, 4),
-        downsample(256, 4),
-        downsample(256, 4)
+        downsample(128, 4, False, name=f'{name}_down1'), # (bs, 32, 32, 128), apply_norm=False
+        downsample(256, 4, name=f'{name}_down2'), # (bs, 16, 16, 256)
+        downsample(256, 4, name=f'{name}_down3'), # (bs, 8, 8, 256)
+        downsample(256, 4, name=f'{name}_down4'), # (bs, 4, 4, 256)
+        downsample(256, 4, name=f'{name}_down5'), # (bs, 2, 2, 256)
+        downsample(256, 4, name=f'{name}_down6')  # (bs, 1, 1, 256)
     ]
+
+    # UPDATED: Match the up_stack from the training notebook (5 layers)
     up_stack = [
-        upsample(256, 4, True),
-        upsample(256, 4, True),
-        upsample(256, 4),
-        upsample(256, 4),
-        upsample(128, 4)
+        upsample(256, 4, True, name=f'{name}_up1'),  # (bs, 2, 2, 256), apply_dropout=True
+        upsample(256, 4, True, name=f'{name}_up2'),  # (bs, 4, 4, 256), apply_dropout=True
+        upsample(256, 4, name=f'{name}_up3'),        # (bs, 8, 8, 256)
+        upsample(256, 4, name=f'{name}_up4'),        # (bs, 16, 16, 256)
+        upsample(128, 4, name=f'{name}_up5')         # (bs, 32, 32, 128)
     ]
+
     initializer = tf.random_normal_initializer(0., 0.02)
-    last = tf.keras.layers.Conv2DTranspose(
-        1, 4, strides=2, padding='same', kernel_initializer=initializer,
-        activation='tanh'
-    )
-    concat = tf.keras.layers.Concatenate()
-    inputs = tf.keras.layers.Input(shape=[64, 64, 1])
+    last = layers.Conv2DTranspose(output_channels, 4, strides=2, padding='same',
+                                 kernel_initializer=initializer, activation='tanh',
+                                 name=f'{name}_output') # (bs, 64, 64, 1)
+
+    concat = layers.Concatenate()
+
     x = inputs
     skips = []
     for down in down_stack:
         x = down(x)
         skips.append(x)
+
     skips = reversed(skips[:-1])
+
     for up, skip in zip(up_stack, skips):
         x = up(x)
         x = concat([x, skip])
+
     x = last(x)
-    return tf.keras.Model(inputs=inputs, outputs=x)
+    return keras.Model(inputs=inputs, outputs=x, name=name)
+
+print("\n" + "="*80)
+print("I-TRANSLATION: CT ↔ MRI CONVERSION (Checkpoint 652)")
+print("="*80 + "\n")
+
+# Find weight files
+print("Searching for weight files...")
+current_dir = os.getcwd()
+print(f"Current directory: {current_dir}")
+print(f"Files in directory: {os.listdir(current_dir)}")
 
 GENERATORS = {}
-
-GDRIVE_FILE_IDS = {
-    'f': '1O1hQSOoizPt5fJyVuEfxRpq0LibmaGeM',
-    'g': '1nQnBaEyjQyTp3LJ6DF9tfaXrZxIHkROQ',
-    'i': '1QIvFXO0LzDa6IH683OWXkedRAXpcDvk-',
-    'j': '1-Quu4cDJhTpH7RDj-HZ-6c4VsQl1mc6j'
+FILE_NAMES = {
+    'f': 'generator_f.h5',
+    'g': 'generator_g.h5',
+    'i': 'generator_i.h5',
+    'j': 'generator_j.h5'
 }
 
-def download_from_gdrive_requests(file_id, output_path):
-    try:
-        logger.info(f"Downloading file ID: {file_id}")
-        url = f"https://drive.google.com/uc?export=download&id={file_id}"
-        session = requests.Session()
-        response = session.get(url, stream=True)
-        for key, value in response.cookies.items():
-            if key.startswith('download_warning'):
-                url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm={value}"
-                response = session.get(url, stream=True)
-                break
-        total_size = int(response.headers.get('content-length', 0))
-        with open(output_path, 'wb') as f:
-            if total_size == 0:
-                f.write(response.content)
-            else:
-                downloaded = 0
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        progress = (downloaded / total_size) * 100
-                        if downloaded % (1024 * 1024) == 0:
-                            logger.info(f"Progress: {progress:.1f}% ({downloaded / (1024*1024):.1f} MB)")
-        if os.path.exists(output_path):
-            file_size = os.path.getsize(output_path) / (1024 * 1024)
-            logger.info(f"Downloaded successfully! Size: {file_size:.2f} MB")
-            return True
-        else:
-            logger.error(f"Download failed - file not created")
-            return False
-    except Exception as e:
-        logger.error(f"Download error: {str(e)}")
-        return False
+for gen_name, file_name in FILE_NAMES.items():
+    file_path = file_name  # Gradio uses current directory
+    print(f"\n[{gen_name.upper()}] Looking for {file_path}...")
 
-logger.info("="*80)
-logger.info("I-TRANSLATION v5.4 - EXACT COLAB MATCH (NO NAMES)")
-logger.info("="*80)
-logger.info("Starting model download and loading process...")
-logger.info(f"Total models to load: {len(GDRIVE_FILE_IDS)}")
+    if os.path.exists(file_path):
+        file_size = os.path.getsize(file_path) / (1024 * 1024)
+        print(f"[{gen_name.upper()}] ✓ Found! Size: {file_size:.2f} MB")
 
-for gen_name, file_id in GDRIVE_FILE_IDS.items():
-    logger.info("="*60)
-    logger.info(f"[{gen_name.upper()}] Processing Generator {gen_name.upper()}")
-    logger.info("="*60)
-    output_path = f'/tmp/generator_{gen_name}.h5'
-    if download_from_gdrive_requests(file_id, output_path):
         try:
-            logger.info(f"[{gen_name.upper()}] Building model architecture...")
-            model = unet_generator()
-            logger.info(f"[{gen_name.upper()}] Initializing layers...")
+            print(f"[{gen_name.upper()}] Building architecture...")
+            model = unet_generator(name=f'generator_{gen_name}')
+
+            print(f"[{gen_name.upper()}] Initializing layers...")
             dummy_input = tf.zeros((1, 64, 64, 1))
             _ = model(dummy_input, training=False)
-            logger.info(f"[{gen_name.upper()}] Loading weights from file...")
-            model.load_weights(output_path)
-            logger.info(f"[{gen_name.upper()}] Model loaded successfully!")
+
+            print(f"[{gen_name.upper()}] Loading weights...")
+            model.load_weights(file_path)
+
+            print(f"[{gen_name.upper()}] ✓ SUCCESS!")
             GENERATORS[gen_name] = model
-            os.remove(output_path)
-            logger.info(f"[{gen_name.upper()}] Cleaned up temporary file")
+
         except Exception as e:
-            logger.error(f"[{gen_name.upper()}] Error loading model: {str(e)}")
+            print(f"[{gen_name.upper()}] ✘ FAILED: {str(e)}")
     else:
-        logger.error(f"[{gen_name.upper()}] Download failed, skipping model load")
-    logger.info("")
+        print(f"[{gen_name.upper()}] ✘ NOT FOUND")
 
-def preprocess_image(image_bytes):
-    img = Image.open(io.BytesIO(image_bytes)).convert('L')
-    img = img.resize((64, 64), Image.Resampling.LANCZOS)
-    img_array = np.array(img, dtype=np.float32)
-    img_array = (img_array / 127.5) - 1.0
-    img_array = np.expand_dims(img_array, axis=-1)
-    img_array = np.expand_dims(img_array, axis=0)
-    return img_array
+print("\n" + "="*80)
+print(f"MODELS LOADED: {len(GENERATORS)}/4")
+print("="*80 + "\n")
 
-def postprocess_image(tensor):
-    img_array = tensor[0]
-    img_array = ((img_array + 1.0) * 127.5).astype(np.uint8)
-    img_array = img_array[:, :, 0]
-    img = Image.fromarray(img_array, mode='L')
-    return img
+if len(GENERATORS) == 4:
+    print("✓ ALL MODELS READY!")
+else:
+    print("✘ ERROR: Missing weight files!")
+    print("Please upload all 4 .h5 files to Space root")
 
-@app.route('/health', methods=['GET'])
-def health():
-    return jsonify({
-        'status': 'healthy',
-        'models_loaded': len(GENERATORS) == 4,
-        'loaded_models': list(GENERATORS.keys())
-    })
+def convert_image(input_image):
+    if len(GENERATORS) != 4:
+        return None, None, None, None, "❌ Models not loaded! Upload .h5 files to Space root."
 
-@app.route('/convert', methods=['POST'])
-def convert():
+    if input_image is None:
+        return None, None, None, None, "❌ Please upload an image"
+
     try:
-        if len(GENERATORS) != 4:
-            return jsonify({'error': 'Models not fully loaded yet'}), 503
-        conversion_type = request.form.get('type', 'ct_to_mri')
-        results = {}
-        for i in range(1, 5):
-            file_key = f'image{i}'
-            if file_key not in request.files:
-                continue
-            file = request.files[file_key]
-            if file.filename == '':
-                continue
-            image_bytes = file.read()
-            input_tensor = preprocess_image(image_bytes)
-            if conversion_type == 'ct_to_mri':
-                output_f = GENERATORS['f'](input_tensor, training=False)
-                output_g = GENERATORS['g'](input_tensor, training=False)
-                output_i = GENERATORS['i'](output_f, training=False)
-                output_j = GENERATORS['j'](output_g, training=False)
-            else:
-                output_i = GENERATORS['i'](input_tensor, training=False)
-                output_j = GENERATORS['j'](input_tensor, training=False)
-                output_f = GENERATORS['f'](output_i, training=False)
-                output_g = GENERATORS['g'](output_j, training=False)
-            img_f = postprocess_image(output_f.numpy())
-            img_g = postprocess_image(output_g.numpy())
-            img_i = postprocess_image(output_i.numpy())
-            img_j = postprocess_image(output_j.numpy())
-            results[file_key] = {
-                'generator_f': img_f,
-                'generator_g': img_g,
-                'generator_i': img_i,
-                'generator_j': img_j
-            }
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
-            for img_key, generators in results.items():
-                for gen_name, img in generators.items():
-                    img_buffer = io.BytesIO()
-                    img.save(img_buffer, format='PNG')
-                    img_buffer.seek(0)
-                    zip_file.writestr(f'{img_key}_{gen_name}.png', img_buffer.getvalue())
-        zip_buffer.seek(0)
-        return send_file(zip_buffer, mimetype='application/zip', as_attachment=True, download_name='converted_images.zip')
+        # Preprocess
+        img = Image.fromarray(input_image).convert('L')
+        img = img.resize((64, 64), Image.LANCZOS)
+        img_array = np.array(img, dtype=np.float32)
+        img_array = (img_array / 127.5) - 1.0
+        img_array = img_array[np.newaxis, :, :, np.newaxis]
+        input_tensor = tf.constant(img_array)
+
+        # Convert with all 4 generators
+        outputs = []
+        for gen_name in ['f', 'g', 'i', 'j']:
+            output_tensor = GENERATORS[gen_name](input_tensor, training=False)
+            output_array = output_tensor.numpy()[0]
+            output_array = ((output_array + 1.0) * 127.5).astype(np.uint8)
+            output_array = output_array[:, :, 0]
+            output_img = Image.fromarray(output_array, mode='L')
+            output_img = output_img.resize((256, 256), Image.LANCZOS)
+            outputs.append(np.array(output_img))
+
+        status = f"✅ Conversion successful! Generated 4 outputs from checkpoint 652"
+        return outputs[0], outputs[1], outputs[2], outputs[3], status
+
     except Exception as e:
-        logger.error(f"Error in convert: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return None, None, None, None, f"❌ Error: {str(e)}"
 
-logger.info("="*80)
-logger.info("APPLICATION READY TO SERVE REQUESTS")
-logger.info("="*80)
+# Create Gradio interface
+with gr.Blocks(title="I-Translation: CT ↔ MRI") as demo:
+    gr.Markdown("""
+    # ðŸ˜‡ I-Translation: Medical Image Translation
+    ## CT ↔ MRI Conversion using CycleGAN (Checkpoint 652)
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+    Upload a medical image and get 4 different translation results from independent generators.
+    """)
+
+    with gr.Row():
+        with gr.Column():
+            input_img = gr.Image(label="ðŸ˜Š Input Image (CT or MRI)", type="numpy")
+            convert_btn = gr.Button("↺ Convert", variant="primary", size="lg")
+
+        with gr.Column():
+            output1 = gr.Image(label="Generator F Output", type="numpy")
+            output2 = gr.Image(label="Generator G Output", type="numpy")
+
+    with gr.Row():
+        output3 = gr.Image(label="Generator I Output", type="numpy")
+        output4 = gr.Image(label="Generator J Output", type="numpy")
+
+    status = gr.Textbox(label="Status", interactive=False)
+
+    convert_btn.click(
+        fn=convert_image,
+        inputs=[input_img],
+        outputs=[output1, output2, output3, output4, status]
+    )
+
+    gr.Markdown(f"""
+    ### ℹ️ Model Status
+    - **Models Loaded:** {len(GENERATORS)}/4
+    - **Checkpoint:** 652
+    - **Version:** 6.0.0 (Gradio)
+    """)
+
+if __name__ == "__main__":
+    demo.launch(server_name="0.0.0.0")
