@@ -222,7 +222,7 @@ def preprocess_image(image_bytes):
     return img_array
 
 def postprocess_image(tensor):
-    img_array = tensor<sup>0</sup>
+    img_array = tensor<sup>0</sup>  # ← Square brackets, NOT <sup>0</sup>
     img_array = ((img_array + 1.0) * 127.5).astype(np.uint8)
     img_array = img_array[:, :, 0]
     img = Image.fromarray(img_array, mode='L')
