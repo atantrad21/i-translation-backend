@@ -1,12 +1,9 @@
 """
 ================================================================================
-I-TRANSLATION v6.0 - EXACT COLAB MATCH WITH LAYER NAMES
+I-TRANSLATION v6.1 - LOAD COMPLETE MODELS (NOT JUST WEIGHTS)
 ================================================================================
-This version matches your working Colab code exactly, including:
-- 6 downsample layers + 5 upsample layers
-- Explicit name= arguments for all layers
-- InstanceNormalization with proper build() method
-- Same architecture that successfully loads weights in Colab
+Key change: Load the .h5 files as complete models instead of just weights
+This matches how the files were saved in Colab
 ================================================================================
 """
 
@@ -60,73 +57,6 @@ class InstanceNormalization(layers.Layer):
         config.update({"epsilon": self.epsilon})
         return config
 
-def downsample(filters, size, apply_norm=True, name=None):
-    initializer = tf.random_normal_initializer(0., 0.02)
-    result = keras.Sequential(name=name)
-    result.add(layers.Conv2D(filters, size, strides=2, padding='same',
-                            kernel_initializer=initializer, use_bias=False,
-                            name=f'{name}_conv' if name else None))
-    if apply_norm:
-        result.add(InstanceNormalization(name=f'{name}_norm' if name else None))
-    result.add(layers.LeakyReLU(name=f'{name}_leaky' if name else None))
-    return result
-
-def upsample(filters, size, apply_dropout=False, name=None):
-    initializer = tf.random_normal_initializer(0., 0.02)
-    result = keras.Sequential(name=name)
-    result.add(layers.Conv2DTranspose(filters, size, strides=2, padding='same',
-                                     kernel_initializer=initializer, use_bias=False,
-                                     name=f'{name}_conv' if name else None))
-    result.add(InstanceNormalization(name=f'{name}_norm' if name else None))
-    if apply_dropout:
-        result.add(layers.Dropout(0.5, name=f'{name}_dropout' if name else None))
-    result.add(layers.ReLU(name=f'{name}_relu' if name else None))
-    return result
-
-def unet_generator(output_channels=1, name='generator'):
-    inputs = layers.Input(shape=[64, 64, 1], name=f'{name}_input')
-
-    # 6 downsample layers - EXACT MATCH TO COLAB
-    down_stack = [
-        downsample(128, 4, False, name=f'{name}_down1'),  # (bs, 32, 32, 128)
-        downsample(256, 4, name=f'{name}_down2'),         # (bs, 16, 16, 256)
-        downsample(256, 4, name=f'{name}_down3'),         # (bs, 8, 8, 256)
-        downsample(256, 4, name=f'{name}_down4'),         # (bs, 4, 4, 256)
-        downsample(256, 4, name=f'{name}_down5'),         # (bs, 2, 2, 256)
-        downsample(256, 4, name=f'{name}_down6')          # (bs, 1, 1, 256)
-    ]
-
-    # 5 upsample layers - EXACT MATCH TO COLAB
-    up_stack = [
-        upsample(256, 4, True, name=f'{name}_up1'),       # (bs, 2, 2, 256)
-        upsample(256, 4, True, name=f'{name}_up2'),       # (bs, 4, 4, 256)
-        upsample(256, 4, name=f'{name}_up3'),             # (bs, 8, 8, 256)
-        upsample(256, 4, name=f'{name}_up4'),             # (bs, 16, 16, 256)
-        upsample(128, 4, name=f'{name}_up5')              # (bs, 32, 32, 128)
-    ]
-
-    initializer = tf.random_normal_initializer(0., 0.02)
-    last = layers.Conv2DTranspose(output_channels, 4, strides=2, padding='same',
-                                 kernel_initializer=initializer, activation='tanh',
-                                 name=f'{name}_output')  # (bs, 64, 64, 1)
-
-    concat = layers.Concatenate()
-
-    x = inputs
-    skips = []
-    for down in down_stack:
-        x = down(x)
-        skips.append(x)
-
-    skips = reversed(skips[:-1])
-
-    for up, skip in zip(up_stack, skips):
-        x = up(x)
-        x = concat([x, skip])
-
-    x = last(x)
-    return keras.Model(inputs=inputs, outputs=x, name=name)
-
 GENERATORS = {}
 
 GDRIVE_FILE_IDS = {
@@ -172,7 +102,7 @@ def download_from_gdrive_requests(file_id, output_path):
         return False
 
 logger.info("="*80)
-logger.info("I-TRANSLATION v6.0 - EXACT COLAB MATCH WITH LAYER NAMES")
+logger.info("I-TRANSLATION v6.1 - LOAD COMPLETE MODELS")
 logger.info("="*80)
 logger.info("Starting model download and loading process...")
 logger.info(f"Total models to load: {len(GDRIVE_FILE_IDS)}")
@@ -184,16 +114,12 @@ for gen_name, file_id in GDRIVE_FILE_IDS.items():
     output_path = f'/tmp/generator_{gen_name}.h5'
     if download_from_gdrive_requests(file_id, output_path):
         try:
-            logger.info(f"[{gen_name.upper()}] Building model architecture...")
-            model = unet_generator(name=f'generator_{gen_name}')
-            
-            logger.info(f"[{gen_name.upper()}] Initializing layers...")
-            dummy_input = tf.zeros((1, 64, 64, 1))
-            _ = model(dummy_input, training=False)
-            
-            logger.info(f"[{gen_name.upper()}] Loading weights from file...")
-            model.load_weights(output_path)
-            
+            logger.info(f"[{gen_name.upper()}] Loading as complete model...")
+            model = tf.keras.models.load_model(
+                output_path,
+                custom_objects={'InstanceNormalization': InstanceNormalization},
+                compile=False
+            )
             logger.info(f"[{gen_name.upper()}] ✅ Model loaded successfully!")
             GENERATORS[gen_name] = model
             os.remove(output_path)
@@ -226,7 +152,7 @@ def health():
         'status': 'healthy',
         'models_loaded': len(GENERATORS) == 4,
         'loaded_models': list(GENERATORS.keys()),
-        'version': '6.0'
+        'version': '6.1'
     })
 
 @app.route('/convert', methods=['POST'])
