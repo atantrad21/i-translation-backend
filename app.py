@@ -1,3 +1,15 @@
+"""
+================================================================================
+I-TRANSLATION v6.0 - EXACT COLAB MATCH WITH LAYER NAMES
+================================================================================
+This version matches your working Colab code exactly, including:
+- 6 downsample layers + 5 upsample layers
+- Explicit name= arguments for all layers
+- InstanceNormalization with proper build() method
+- Same architecture that successfully loads weights in Colab
+================================================================================
+"""
+
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import tensorflow as tf
@@ -36,6 +48,7 @@ class InstanceNormalization(layers.Layer):
             initializer='zeros',
             trainable=True
         )
+        super(InstanceNormalization, self).build(input_shape)
 
     def call(self, inputs):
         mean, variance = tf.nn.moments(inputs, axes=[1, 2], keepdims=True)
@@ -43,65 +56,76 @@ class InstanceNormalization(layers.Layer):
         return self.scale * normalized + self.offset
 
     def get_config(self):
-        config = super().get_config()
+        config = super(InstanceNormalization, self).get_config()
         config.update({"epsilon": self.epsilon})
         return config
 
-def downsample(filters, size, apply_norm=True):
+def downsample(filters, size, apply_norm=True, name=None):
     initializer = tf.random_normal_initializer(0., 0.02)
-    result = tf.keras.Sequential()
-    result.add(tf.keras.layers.Conv2D(filters, size, strides=2, padding='same',
-                                      kernel_initializer=initializer, use_bias=False))
+    result = keras.Sequential(name=name)
+    result.add(layers.Conv2D(filters, size, strides=2, padding='same',
+                            kernel_initializer=initializer, use_bias=False,
+                            name=f'{name}_conv' if name else None))
     if apply_norm:
-        result.add(InstanceNormalization())
-    result.add(tf.keras.layers.LeakyReLU())
+        result.add(InstanceNormalization(name=f'{name}_norm' if name else None))
+    result.add(layers.LeakyReLU(name=f'{name}_leaky' if name else None))
     return result
 
-def upsample(filters, size, apply_dropout=False):
+def upsample(filters, size, apply_dropout=False, name=None):
     initializer = tf.random_normal_initializer(0., 0.02)
-    result = tf.keras.Sequential()
-    result.add(tf.keras.layers.Conv2DTranspose(filters, size, strides=2, padding='same',
-                                               kernel_initializer=initializer, use_bias=False))
-    result.add(InstanceNormalization())
+    result = keras.Sequential(name=name)
+    result.add(layers.Conv2DTranspose(filters, size, strides=2, padding='same',
+                                     kernel_initializer=initializer, use_bias=False,
+                                     name=f'{name}_conv' if name else None))
+    result.add(InstanceNormalization(name=f'{name}_norm' if name else None))
     if apply_dropout:
-        result.add(tf.keras.layers.Dropout(0.5))
-    result.add(tf.keras.layers.ReLU())
+        result.add(layers.Dropout(0.5, name=f'{name}_dropout' if name else None))
+    result.add(layers.ReLU(name=f'{name}_relu' if name else None))
     return result
 
-def unet_generator():
+def unet_generator(output_channels=1, name='generator'):
+    inputs = layers.Input(shape=[64, 64, 1], name=f'{name}_input')
+
+    # 6 downsample layers - EXACT MATCH TO COLAB
     down_stack = [
-        downsample(128, 4, False),
-        downsample(256, 4),
-        downsample(256, 4),
-        downsample(256, 4),
-        downsample(256, 4),
-        downsample(256, 4)
+        downsample(128, 4, False, name=f'{name}_down1'),  # (bs, 32, 32, 128)
+        downsample(256, 4, name=f'{name}_down2'),         # (bs, 16, 16, 256)
+        downsample(256, 4, name=f'{name}_down3'),         # (bs, 8, 8, 256)
+        downsample(256, 4, name=f'{name}_down4'),         # (bs, 4, 4, 256)
+        downsample(256, 4, name=f'{name}_down5'),         # (bs, 2, 2, 256)
+        downsample(256, 4, name=f'{name}_down6')          # (bs, 1, 1, 256)
     ]
+
+    # 5 upsample layers - EXACT MATCH TO COLAB
     up_stack = [
-        upsample(256, 4, True),
-        upsample(256, 4, True),
-        upsample(256, 4),
-        upsample(256, 4),
-        upsample(128, 4)
+        upsample(256, 4, True, name=f'{name}_up1'),       # (bs, 2, 2, 256)
+        upsample(256, 4, True, name=f'{name}_up2'),       # (bs, 4, 4, 256)
+        upsample(256, 4, name=f'{name}_up3'),             # (bs, 8, 8, 256)
+        upsample(256, 4, name=f'{name}_up4'),             # (bs, 16, 16, 256)
+        upsample(128, 4, name=f'{name}_up5')              # (bs, 32, 32, 128)
     ]
+
     initializer = tf.random_normal_initializer(0., 0.02)
-    last = tf.keras.layers.Conv2DTranspose(
-        1, 4, strides=2, padding='same', kernel_initializer=initializer,
-        activation='tanh'
-    )
-    concat = tf.keras.layers.Concatenate()
-    inputs = tf.keras.layers.Input(shape=[64, 64, 1])
+    last = layers.Conv2DTranspose(output_channels, 4, strides=2, padding='same',
+                                 kernel_initializer=initializer, activation='tanh',
+                                 name=f'{name}_output')  # (bs, 64, 64, 1)
+
+    concat = layers.Concatenate()
+
     x = inputs
     skips = []
     for down in down_stack:
         x = down(x)
         skips.append(x)
+
     skips = reversed(skips[:-1])
+
     for up, skip in zip(up_stack, skips):
         x = up(x)
         x = concat([x, skip])
+
     x = last(x)
-    return tf.keras.Model(inputs=inputs, outputs=x)
+    return keras.Model(inputs=inputs, outputs=x, name=name)
 
 GENERATORS = {}
 
@@ -148,7 +172,7 @@ def download_from_gdrive_requests(file_id, output_path):
         return False
 
 logger.info("="*80)
-logger.info("I-TRANSLATION v5.4 - EXACT COLAB MATCH (NO NAMES)")
+logger.info("I-TRANSLATION v6.0 - EXACT COLAB MATCH WITH LAYER NAMES")
 logger.info("="*80)
 logger.info("Starting model download and loading process...")
 logger.info(f"Total models to load: {len(GDRIVE_FILE_IDS)}")
@@ -161,18 +185,21 @@ for gen_name, file_id in GDRIVE_FILE_IDS.items():
     if download_from_gdrive_requests(file_id, output_path):
         try:
             logger.info(f"[{gen_name.upper()}] Building model architecture...")
-            model = unet_generator()
+            model = unet_generator(name=f'generator_{gen_name}')
+            
             logger.info(f"[{gen_name.upper()}] Initializing layers...")
             dummy_input = tf.zeros((1, 64, 64, 1))
             _ = model(dummy_input, training=False)
+            
             logger.info(f"[{gen_name.upper()}] Loading weights from file...")
             model.load_weights(output_path)
-            logger.info(f"[{gen_name.upper()}] Model loaded successfully!")
+            
+            logger.info(f"[{gen_name.upper()}] ✅ Model loaded successfully!")
             GENERATORS[gen_name] = model
             os.remove(output_path)
             logger.info(f"[{gen_name.upper()}] Cleaned up temporary file")
         except Exception as e:
-            logger.error(f"[{gen_name.upper()}] Error loading model: {str(e)}")
+            logger.error(f"[{gen_name.upper()}] ❌ Error loading model: {str(e)}")
     else:
         logger.error(f"[{gen_name.upper()}] Download failed, skipping model load")
     logger.info("")
@@ -198,7 +225,8 @@ def health():
     return jsonify({
         'status': 'healthy',
         'models_loaded': len(GENERATORS) == 4,
-        'loaded_models': list(GENERATORS.keys())
+        'loaded_models': list(GENERATORS.keys()),
+        'version': '6.0'
     })
 
 @app.route('/convert', methods=['POST'])
@@ -206,8 +234,10 @@ def convert():
     try:
         if len(GENERATORS) != 4:
             return jsonify({'error': 'Models not fully loaded yet'}), 503
+        
         conversion_type = request.form.get('type', 'ct_to_mri')
         results = {}
+        
         for i in range(1, 5):
             file_key = f'image{i}'
             if file_key not in request.files:
@@ -215,8 +245,10 @@ def convert():
             file = request.files[file_key]
             if file.filename == '':
                 continue
+            
             image_bytes = file.read()
             input_tensor = preprocess_image(image_bytes)
+            
             if conversion_type == 'ct_to_mri':
                 output_f = GENERATORS['f'](input_tensor, training=False)
                 output_g = GENERATORS['g'](input_tensor, training=False)
@@ -227,16 +259,19 @@ def convert():
                 output_j = GENERATORS['j'](input_tensor, training=False)
                 output_f = GENERATORS['f'](output_i, training=False)
                 output_g = GENERATORS['g'](output_j, training=False)
+            
             img_f = postprocess_image(output_f.numpy())
             img_g = postprocess_image(output_g.numpy())
             img_i = postprocess_image(output_i.numpy())
             img_j = postprocess_image(output_j.numpy())
+            
             results[file_key] = {
                 'generator_f': img_f,
                 'generator_g': img_g,
                 'generator_i': img_i,
                 'generator_j': img_j
             }
+        
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
             for img_key, generators in results.items():
@@ -245,14 +280,16 @@ def convert():
                     img.save(img_buffer, format='PNG')
                     img_buffer.seek(0)
                     zip_file.writestr(f'{img_key}_{gen_name}.png', img_buffer.getvalue())
+        
         zip_buffer.seek(0)
         return send_file(zip_buffer, mimetype='application/zip', as_attachment=True, download_name='converted_images.zip')
+    
     except Exception as e:
         logger.error(f"Error in convert: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 logger.info("="*80)
-logger.info("APPLICATION READY TO SERVE REQUESTS")
+logger.info("✅ APPLICATION READY TO SERVE REQUESTS")
 logger.info("="*80)
 
 if __name__ == '__main__':
