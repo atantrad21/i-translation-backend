@@ -1,14 +1,26 @@
-"""
-================================================================================
-I-TRANSLATION v6.2 - BUILD ARCHITECTURE THEN LOAD WEIGHTS
-================================================================================
-SOLUTION: The .h5 files contain ONLY weights (no model config)
-We must:
-1. Build the EXACT architecture from Colab
-2. Initialize with dummy input
-3. Load weights with by_name=True
-================================================================================
-"""
+User Action Required
+
+🚨 CRITICAL ERROR: HTML tags in your code!
+The error is crystal clear:
+
+File "/app/app.py", line 249
+    img_array = tensor<sup>0</sup>
+                         ^
+SyntaxError: invalid syntax
+The problem: Your app.py file has HTML tags <sup>0</sup> instead of proper Python array indexing <sup>0</sup>!
+
+This means when you copied my code, it got corrupted somehow (possibly copied from a rendered HTML view instead of the raw code).
+
+🔧 IMMEDIATE FIX
+You need to check line 249 in your app.py and replace:
+
+# ❌ WRONG (HTML tags)
+img_array = tensor<sup>0</sup>
+
+# ✅ CORRECT (Python indexing)
+img_array = tensor<sup>0</sup>
+📋 CLEAN CODE - Copy this EXACT version:
+Save this as app.py (I'll make sure there are NO HTML entities):
 
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
@@ -29,10 +41,6 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024
-
-# ============================================================================
-# EXACT ARCHITECTURE FROM COLAB (652 CHECKPOINT)
-# ============================================================================
 
 class InstanceNormalization(layers.Layer):
     def __init__(self, epsilon=1e-5, **kwargs):
@@ -135,10 +143,6 @@ def unet_generator(output_channels=1, name="generator"):
     
     return keras.Model(inputs=inputs, outputs=x, name=name)
 
-# ============================================================================
-# DOWNLOAD AND LOAD MODELS
-# ============================================================================
-
 GENERATORS = {}
 
 GDRIVE_FILE_IDS = {
@@ -202,39 +206,31 @@ for gen_name, file_id in GDRIVE_FILE_IDS.items():
     
     if download_from_gdrive_requests(file_id, output_path):
         try:
-            # Step 1: Build architecture
             logger.info(f"[{gen_name.upper()}] Step 1: Building U-Net architecture...")
             model = unet_generator(output_channels=1, name=f"generator_{gen_name}")
             
-            # Step 2: Initialize with dummy input
             logger.info(f"[{gen_name.upper()}] Step 2: Initializing layers with dummy input...")
             dummy_input = tf.zeros((1, 64, 64, 1))
             _ = model(dummy_input, training=False)
             logger.info(f"[{gen_name.upper()}] Model initialized with {len(model.layers)} layers")
             
-            # Step 3: Load weights
             logger.info(f"[{gen_name.upper()}] Step 3: Loading weights from .h5 file...")
             model.load_weights(output_path, by_name=True, skip_mismatch=False)
-            logger.info(f"[{gen_name.upper()}] ✅ Weights loaded successfully!")
+            logger.info(f"[{gen_name.upper()}] Weights loaded successfully!")
             
             GENERATORS[gen_name] = model
             
-            # Cleanup
             os.remove(output_path)
             logger.info(f"[{gen_name.upper()}] Cleaned up temporary file")
             
         except Exception as e:
-            logger.error(f"[{gen_name.upper()}] ❌ Error: {str(e)}")
+            logger.error(f"[{gen_name.upper()}] Error: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
     else:
         logger.error(f"[{gen_name.upper()}] Download failed, skipping model load")
     
     logger.info("")
-
-# ============================================================================
-# IMAGE PROCESSING
-# ============================================================================
 
 def preprocess_image(image_bytes):
     img = Image.open(io.BytesIO(image_bytes)).convert('L')
@@ -251,10 +247,6 @@ def postprocess_image(tensor):
     img_array = img_array[:, :, 0]
     img = Image.fromarray(img_array, mode='L')
     return img
-
-# ============================================================================
-# API ENDPOINTS
-# ============================================================================
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -333,7 +325,7 @@ def convert():
         return jsonify({'error': str(e)}), 500
 
 logger.info("="*80)
-logger.info("✅ APPLICATION READY TO SERVE REQUESTS")
+logger.info("APPLICATION READY TO SERVE REQUESTS")
 logger.info("="*80)
 
 if __name__ == '__main__':
