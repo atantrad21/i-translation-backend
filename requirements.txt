@@ -5,4 +5,4 @@ tensorflow==2.15.0
 Pillow==10.2.0
 numpy==1.24.3
 gunicorn==21.2.0
-gdown==4.7.1
+gdown==5.1.0
