@@ -1,15 +1,3 @@
-User Action Required
-
-🎯 NO PROBLEM! I'll give you the code directly to copy-paste!
-📋 COPY THIS ENTIRE CODE BLOCK:
-Instructions:
-
-Select ALL the code below (from from flask to the last line)
-Copy it (Ctrl+C / Cmd+C)
-Go to GitHub → Your repository → app.py
-Delete ALL existing content
-Paste this clean code
-Commit changes
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import tensorflow as tf
