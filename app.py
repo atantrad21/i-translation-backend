@@ -9,6 +9,7 @@ import io
 import zipfile
 import os
 import logging
+import requests
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -35,7 +36,6 @@ class InstanceNormalization(layers.Layer):
             initializer='zeros',
             trainable=True
         )
-        super(InstanceNormalization, self).build(input_shape)
 
     def call(self, inputs):
         mean, variance = tf.nn.moments(inputs, axes=[1, 2], keepdims=True)
@@ -43,7 +43,7 @@ class InstanceNormalization(layers.Layer):
         return self.scale * normalized + self.offset
 
     def get_config(self):
-        config = super(InstanceNormalization, self).get_config()
+        config = super().get_config()
         config.update({"epsilon": self.epsilon})
         return config
 
@@ -55,7 +55,7 @@ def downsample(filters, size, apply_norm=True, name=None):
                             name=f'{name}_conv' if name else None))
     if apply_norm:
         result.add(InstanceNormalization(name=f'{name}_norm' if name else None))
-    result.add(layers.LeakyReLU(name=f'{name}_leaky' if name else None))
+    result.add(layers.LeakyReLU(name=f'{name}_activation' if name else None))
     return result
 
 def upsample(filters, size, apply_dropout=False, name=None):
@@ -67,10 +67,10 @@ def upsample(filters, size, apply_dropout=False, name=None):
     result.add(InstanceNormalization(name=f'{name}_norm' if name else None))
     if apply_dropout:
         result.add(layers.Dropout(0.5, name=f'{name}_dropout' if name else None))
-    result.add(layers.ReLU(name=f'{name}_relu' if name else None))
+    result.add(layers.ReLU(name=f'{name}_activation' if name else None))
     return result
 
-def unet_generator(output_channels=1, name='generator'):
+def unet_generator(name='generator'):
     inputs = layers.Input(shape=[64, 64, 1], name=f'{name}_input')
     
     down_stack = [
@@ -78,17 +78,26 @@ def unet_generator(output_channels=1, name='generator'):
         downsample(128, 4, name=f'{name}_down2'),
         downsample(256, 4, name=f'{name}_down3'),
         downsample(512, 4, name=f'{name}_down4'),
+        downsample(512, 4, name=f'{name}_down5'),
+        downsample(512, 4, name=f'{name}_down6'),
+        downsample(512, 4, name=f'{name}_down7'),
+        downsample(512, 4, name=f'{name}_down8'),
     ]
     
     up_stack = [
-        upsample(256, 4, apply_dropout=True, name=f'{name}_up1'),
-        upsample(128, 4, apply_dropout=True, name=f'{name}_up2'),
-        upsample(64, 4, name=f'{name}_up3'),
+        upsample(512, 4, apply_dropout=True, name=f'{name}_up1'),
+        upsample(512, 4, apply_dropout=True, name=f'{name}_up2'),
+        upsample(512, 4, apply_dropout=True, name=f'{name}_up3'),
+        upsample(512, 4, name=f'{name}_up4'),
+        upsample(256, 4, name=f'{name}_up5'),
+        upsample(128, 4, name=f'{name}_up6'),
+        upsample(64, 4, name=f'{name}_up7'),
     ]
     
     initializer = tf.random_normal_initializer(0., 0.02)
-    last = layers.Conv2DTranspose(output_channels, 4, strides=2, padding='same',
-                                 kernel_initializer=initializer, activation='tanh',
+    last = layers.Conv2DTranspose(1, 4, strides=2, padding='same',
+                                 kernel_initializer=initializer,
+                                 activation='tanh',
                                  name=f'{name}_output')
     
     x = inputs
@@ -101,16 +110,14 @@ def unet_generator(output_channels=1, name='generator'):
     
     for up, skip in zip(up_stack, skips):
         x = up(x)
-        x = layers.Concatenate(name=f'{up.name}_concat')([x, skip])
+        x = layers.Concatenate(name=f'{name}_concat_{up.name}')([x, skip])
     
     x = last(x)
+    
     return keras.Model(inputs=inputs, outputs=x, name=name)
 
-logger.info("="*80)
-logger.info("🚀 I-TRANSLATION v5.2 - RAILWAY PRODUCTION")
-logger.info("="*80)
+GENERATORS = {}
 
-# Google Drive File IDs - VERIFIED AND WORKING
 GDRIVE_FILE_IDS = {
     'f': '1O1hQSOoizPt5fJyVuEfxRpq0LibmaGeM',
     'g': '1nQnBaEyjQyTp3LJ6DF9tfaXrZxIHkROQ',
@@ -118,19 +125,42 @@ GDRIVE_FILE_IDS = {
     'j': '1-Quu4cDJhTpH7RDj-HZ-6c4VsQl1mc6j'
 }
 
-GENERATORS = {}
-
-def download_from_gdrive(file_id, output_path):
-    """Download file from Google Drive using gdown with proper error handling"""
+def download_from_gdrive_requests(file_id, output_path):
+    """Download file from Google Drive using requests library (more reliable)"""
     try:
-        import gdown
         logger.info(f"📥 Downloading file ID: {file_id}")
         
-        # Use gdown with fuzzy=True to handle various Google Drive link formats
-        url = f'https://drive.google.com/uc?id={file_id}'
-        result = gdown.download(url, output_path, quiet=False, fuzzy=True)
+        # Google Drive direct download URL
+        url = f"https://drive.google.com/uc?export=download&id={file_id}"
         
-        if result and os.path.exists(output_path):
+        session = requests.Session()
+        response = session.get(url, stream=True)
+        
+        # Handle the confirmation token for large files
+        for key, value in response.cookies.items():
+            if key.startswith('download_warning'):
+                url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm={value}"
+                response = session.get(url, stream=True)
+                break
+        
+        # Get file size
+        total_size = int(response.headers.get('content-length', 0))
+        
+        # Download with progress
+        with open(output_path, 'wb') as f:
+            if total_size == 0:
+                f.write(response.content)
+            else:
+                downloaded = 0
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        progress = (downloaded / total_size) * 100
+                        if downloaded % (1024 * 1024) == 0:
+                            logger.info(f"Progress: {progress:.1f}% ({downloaded / (1024*1024):.1f} MB)")
+        
+        if os.path.exists(output_path):
             file_size = os.path.getsize(output_path) / (1024 * 1024)
             logger.info(f"✅ Downloaded successfully! Size: {file_size:.2f} MB")
             return True
@@ -142,18 +172,22 @@ def download_from_gdrive(file_id, output_path):
         logger.error(f"❌ Download error: {str(e)}")
         return False
 
-logger.info("\n📦 Starting model download and loading process...")
+logger.info("="*80)
+logger.info("🚀 I-TRANSLATION v5.3 - RAILWAY PRODUCTION (FIXED DOWNLOAD)")
+logger.info("="*80)
+logger.info("")
+logger.info("📦 Starting model download and loading process...")
 logger.info(f"Total models to load: {len(GDRIVE_FILE_IDS)}")
+logger.info("")
 
 for gen_name, file_id in GDRIVE_FILE_IDS.items():
-    logger.info(f"\n{'='*60}")
+    logger.info("="*60)
     logger.info(f"[{gen_name.upper()}] Processing Generator {gen_name.upper()}")
-    logger.info(f"{'='*60}")
+    logger.info("="*60)
     
     output_path = f'/tmp/generator_{gen_name}.h5'
     
-    # Download file
-    if download_from_gdrive(file_id, output_path):
+    if download_from_gdrive_requests(file_id, output_path):
         try:
             logger.info(f"[{gen_name.upper()}] 🏗️  Building model architecture...")
             model = unet_generator(name=f'generator_{gen_name}')
@@ -168,117 +202,104 @@ for gen_name, file_id in GDRIVE_FILE_IDS.items():
             logger.info(f"[{gen_name.upper()}] ✅ Model loaded successfully!")
             GENERATORS[gen_name] = model
             
-            # Clean up downloaded file to save disk space
             os.remove(output_path)
             logger.info(f"[{gen_name.upper()}] 🧹 Cleaned up temporary file")
             
         except Exception as e:
-            logger.error(f"[{gen_name.upper()}] ❌ Failed to load model: {str(e)}")
-            if os.path.exists(output_path):
-                os.remove(output_path)
+            logger.error(f"[{gen_name.upper()}] ❌ Error loading model: {str(e)}")
     else:
         logger.error(f"[{gen_name.upper()}] ❌ Download failed, skipping model load")
-
-logger.info("\n" + "="*80)
-logger.info(f"📊 FINAL STATUS: {len(GENERATORS)}/4 models loaded")
-logger.info("="*80)
-
-if len(GENERATORS) == 4:
-    logger.info("🎉 SUCCESS! All 4 models loaded and ready!")
-else:
-    logger.warning(f"⚠️  WARNING: Only {len(GENERATORS)}/4 models loaded")
-    logger.warning(f"Available: {list(GENERATORS.keys())}")
-    logger.warning(f"Missing: {[k for k in ['f', 'g', 'i', 'j'] if k not in GENERATORS]}")
+    
+    logger.info("")
 
 def preprocess_image(image_bytes):
     img = Image.open(io.BytesIO(image_bytes)).convert('L')
-    img = img.resize((64, 64), Image.LANCZOS)
+    img = img.resize((64, 64), Image.Resampling.LANCZOS)
     img_array = np.array(img, dtype=np.float32)
     img_array = (img_array / 127.5) - 1.0
-    img_array = img_array[np.newaxis, :, :, np.newaxis]
+    img_array = np.expand_dims(img_array, axis=-1)
+    img_array = np.expand_dims(img_array, axis=0)
     return img_array
 
 def postprocess_image(tensor):
-    img_array = tensor[0]
+    img_array = tensor<sup>0</sup>
     img_array = ((img_array + 1.0) * 127.5).astype(np.uint8)
     img_array = img_array[:, :, 0]
     img = Image.fromarray(img_array, mode='L')
-    img = img.resize((256, 256), Image.LANCZOS)
-    img_bytes = io.BytesIO()
-    img.save(img_bytes, format='PNG')
-    img_bytes.seek(0)
-    return img_bytes
+    return img
 
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({
-        'status': 'ready' if len(GENERATORS) == 4 else 'partial',
+        'status': 'healthy',
         'models_loaded': len(GENERATORS) == 4,
-        'generators_available': list(GENERATORS.keys()),
-        'generators_missing': [k for k in ['f', 'g', 'i', 'j'] if k not in GENERATORS],
-        'total_models': len(GENERATORS),
-        'version': '5.2.0',
-        'checkpoint': 884,
-        'platform': 'Railway'
+        'loaded_models': list(GENERATORS.keys())
     })
 
 @app.route('/convert', methods=['POST'])
 def convert():
-    if len(GENERATORS) == 0:
-        return jsonify({'error': 'No models loaded yet. Please check logs.'}), 503
-    
-    if 'image' not in request.files:
-        return jsonify({'error': 'No image provided'}), 400
-    
-    image_file = request.files['image']
-    image_bytes = image_file.read()
-    
-    input_tensor = preprocess_image(image_bytes)
-    
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for gen_name, model in GENERATORS.items():
-            output_tensor = model(input_tensor, training=False)
-            output_bytes = postprocess_image(output_tensor.numpy())
-            zip_file.writestr(f'generator_{gen_name}.png', output_bytes.getvalue())
-    
-    zip_buffer.seek(0)
-    return send_file(zip_buffer, mimetype='application/zip', as_attachment=True, download_name='results.zip')
-
-@app.route('/convert-batch', methods=['POST'])
-def convert_batch():
-    if len(GENERATORS) == 0:
-        return jsonify({'error': 'No models loaded yet. Please check logs.'}), 503
-    
-    if 'images' not in request.files:
-        return jsonify({'error': 'No images provided'}), 400
-    
-    images = request.files.getlist('images')
-    
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for idx, image_file in enumerate(images):
-            image_bytes = image_file.read()
+    try:
+        if len(GENERATORS) != 4:
+            return jsonify({'error': 'Models not fully loaded yet'}), 503
+        
+        conversion_type = request.form.get('type', 'ct_to_mri')
+        
+        results = {}
+        for i in range(1, 5):
+            file_key = f'image{i}'
+            if file_key not in request.files:
+                continue
+            
+            file = request.files[file_key]
+            if file.filename == '':
+                continue
+            
+            image_bytes = file.read()
             input_tensor = preprocess_image(image_bytes)
             
-            for gen_name, model in GENERATORS.items():
-                output_tensor = model(input_tensor, training=False)
-                output_bytes = postprocess_image(output_tensor.numpy())
-                zip_file.writestr(f'image_{idx}_generator_{gen_name}.png', output_bytes.getvalue())
+            if conversion_type == 'ct_to_mri':
+                output_f = GENERATORS['f'](input_tensor, training=False)
+                output_g = GENERATORS['g'](input_tensor, training=False)
+                output_i = GENERATORS['i'](output_f, training=False)
+                output_j = GENERATORS['j'](output_g, training=False)
+            else:
+                output_i = GENERATORS['i'](input_tensor, training=False)
+                output_j = GENERATORS['j'](input_tensor, training=False)
+                output_f = GENERATORS['f'](output_i, training=False)
+                output_g = GENERATORS['g'](output_j, training=False)
+            
+            img_f = postprocess_image(output_f.numpy())
+            img_g = postprocess_image(output_g.numpy())
+            img_i = postprocess_image(output_i.numpy())
+            img_j = postprocess_image(output_j.numpy())
+            
+            results[file_key] = {
+                'generator_f': img_f,
+                'generator_g': img_g,
+                'generator_i': img_i,
+                'generator_j': img_j
+            }
+        
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+            for img_key, generators in results.items():
+                for gen_name, img in generators.items():
+                    img_buffer = io.BytesIO()
+                    img.save(img_buffer, format='PNG')
+                    img_buffer.seek(0)
+                    zip_file.writestr(f'{img_key}_{gen_name}.png', img_buffer.getvalue())
+        
+        zip_buffer.seek(0)
+        return send_file(zip_buffer, mimetype='application/zip', as_attachment=True, download_name='converted_images.zip')
     
-    zip_buffer.seek(0)
-    return send_file(zip_buffer, mimetype='application/zip', as_attachment=True, download_name='batch_results.zip')
+    except Exception as e:
+        logger.error(f"Error in convert: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
-logger.info("\n" + "="*80)
-logger.info("🌐 API ENDPOINTS REGISTERED")
-logger.info("="*80)
-logger.info("✓ GET  /health        - Check system status")
-logger.info("✓ POST /convert       - Convert single image")
-logger.info("✓ POST /convert-batch - Convert multiple images")
 logger.info("="*80)
 logger.info("✅ APPLICATION READY TO SERVE REQUESTS")
-logger.info("="*80 + "\n")
+logger.info("="*80)
+logger.info("")
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
