@@ -1,9 +1,12 @@
 """
 ================================================================================
-I-TRANSLATION v6.1 - LOAD COMPLETE MODELS (NOT JUST WEIGHTS)
+I-TRANSLATION v6.2 - BUILD ARCHITECTURE THEN LOAD WEIGHTS
 ================================================================================
-Key change: Load the .h5 files as complete models instead of just weights
-This matches how the files were saved in Colab
+SOLUTION: The .h5 files contain ONLY weights (no model config)
+We must:
+1. Build the EXACT architecture from Colab
+2. Initialize with dummy input
+3. Load weights with by_name=True
 ================================================================================
 """
 
@@ -26,6 +29,10 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024
+
+# ============================================================================
+# EXACT ARCHITECTURE FROM COLAB (652 CHECKPOINT)
+# ============================================================================
 
 class InstanceNormalization(layers.Layer):
     def __init__(self, epsilon=1e-5, **kwargs):
@@ -57,6 +64,81 @@ class InstanceNormalization(layers.Layer):
         config.update({"epsilon": self.epsilon})
         return config
 
+def downsample(filters, size, apply_norm=True, name_prefix="down"):
+    initializer = tf.random_normal_initializer(0., 0.02)
+    result = keras.Sequential(name=f"{name_prefix}_seq")
+    result.add(layers.Conv2D(
+        filters, size, strides=2, padding='same',
+        kernel_initializer=initializer, use_bias=False,
+        name=f"{name_prefix}_conv"
+    ))
+    if apply_norm:
+        result.add(InstanceNormalization(name=f"{name_prefix}_norm"))
+    result.add(layers.LeakyReLU(name=f"{name_prefix}_leaky"))
+    return result
+
+def upsample(filters, size, apply_dropout=False, name_prefix="up"):
+    initializer = tf.random_normal_initializer(0., 0.02)
+    result = keras.Sequential(name=f"{name_prefix}_seq")
+    result.add(layers.Conv2DTranspose(
+        filters, size, strides=2, padding='same',
+        kernel_initializer=initializer, use_bias=False,
+        name=f"{name_prefix}_convT"
+    ))
+    result.add(InstanceNormalization(name=f"{name_prefix}_norm"))
+    if apply_dropout:
+        result.add(layers.Dropout(0.5, name=f"{name_prefix}_dropout"))
+    result.add(layers.ReLU(name=f"{name_prefix}_relu"))
+    return result
+
+def unet_generator(output_channels=1, name="generator"):
+    inputs = layers.Input(shape=[64, 64, 1], name=f"{name}_input")
+    
+    down_stack = [
+        downsample(64, 4, apply_norm=False, name_prefix=f"{name}_down1"),
+        downsample(128, 4, name_prefix=f"{name}_down2"),
+        downsample(256, 4, name_prefix=f"{name}_down3"),
+        downsample(512, 4, name_prefix=f"{name}_down4"),
+        downsample(512, 4, name_prefix=f"{name}_down5"),
+        downsample(512, 4, name_prefix=f"{name}_down6"),
+    ]
+    
+    up_stack = [
+        upsample(512, 4, apply_dropout=True, name_prefix=f"{name}_up1"),
+        upsample(512, 4, apply_dropout=True, name_prefix=f"{name}_up2"),
+        upsample(512, 4, name_prefix=f"{name}_up3"),
+        upsample(256, 4, name_prefix=f"{name}_up4"),
+        upsample(128, 4, name_prefix=f"{name}_up5"),
+        upsample(64, 4, name_prefix=f"{name}_up6"),
+    ]
+    
+    initializer = tf.random_normal_initializer(0., 0.02)
+    last = layers.Conv2DTranspose(
+        output_channels, 4, strides=2, padding='same',
+        kernel_initializer=initializer, activation='tanh',
+        name=f"{name}_output_conv"
+    )
+    
+    x = inputs
+    skips = []
+    for down in down_stack:
+        x = down(x)
+        skips.append(x)
+    
+    skips = reversed(skips[:-1])
+    
+    for up, skip in zip(up_stack, skips):
+        x = up(x)
+        x = layers.Concatenate(name=f"{up.name}_concat")([x, skip])
+    
+    x = last(x)
+    
+    return keras.Model(inputs=inputs, outputs=x, name=name)
+
+# ============================================================================
+# DOWNLOAD AND LOAD MODELS
+# ============================================================================
+
 GENERATORS = {}
 
 GDRIVE_FILE_IDS = {
@@ -72,12 +154,15 @@ def download_from_gdrive_requests(file_id, output_path):
         url = f"https://drive.google.com/uc?export=download&id={file_id}"
         session = requests.Session()
         response = session.get(url, stream=True)
+        
         for key, value in response.cookies.items():
             if key.startswith('download_warning'):
                 url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm={value}"
                 response = session.get(url, stream=True)
                 break
+        
         total_size = int(response.headers.get('content-length', 0))
+        
         with open(output_path, 'wb') as f:
             if total_size == 0:
                 f.write(response.content)
@@ -90,6 +175,7 @@ def download_from_gdrive_requests(file_id, output_path):
                         progress = (downloaded / total_size) * 100
                         if downloaded % (1024 * 1024) == 0:
                             logger.info(f"Progress: {progress:.1f}% ({downloaded / (1024*1024):.1f} MB)")
+        
         if os.path.exists(output_path):
             file_size = os.path.getsize(output_path) / (1024 * 1024)
             logger.info(f"Downloaded successfully! Size: {file_size:.2f} MB")
@@ -102,7 +188,7 @@ def download_from_gdrive_requests(file_id, output_path):
         return False
 
 logger.info("="*80)
-logger.info("I-TRANSLATION v6.1 - LOAD COMPLETE MODELS")
+logger.info("I-TRANSLATION v6.2 - BUILD ARCHITECTURE THEN LOAD WEIGHTS")
 logger.info("="*80)
 logger.info("Starting model download and loading process...")
 logger.info(f"Total models to load: {len(GDRIVE_FILE_IDS)}")
@@ -111,24 +197,44 @@ for gen_name, file_id in GDRIVE_FILE_IDS.items():
     logger.info("="*60)
     logger.info(f"[{gen_name.upper()}] Processing Generator {gen_name.upper()}")
     logger.info("="*60)
+    
     output_path = f'/tmp/generator_{gen_name}.h5'
+    
     if download_from_gdrive_requests(file_id, output_path):
         try:
-            logger.info(f"[{gen_name.upper()}] Loading as complete model...")
-            model = tf.keras.models.load_model(
-                output_path,
-                custom_objects={'InstanceNormalization': InstanceNormalization},
-                compile=False
-            )
-            logger.info(f"[{gen_name.upper()}] ✅ Model loaded successfully!")
+            # Step 1: Build architecture
+            logger.info(f"[{gen_name.upper()}] Step 1: Building U-Net architecture...")
+            model = unet_generator(output_channels=1, name=f"generator_{gen_name}")
+            
+            # Step 2: Initialize with dummy input
+            logger.info(f"[{gen_name.upper()}] Step 2: Initializing layers with dummy input...")
+            dummy_input = tf.zeros((1, 64, 64, 1))
+            _ = model(dummy_input, training=False)
+            logger.info(f"[{gen_name.upper()}] Model initialized with {len(model.layers)} layers")
+            
+            # Step 3: Load weights
+            logger.info(f"[{gen_name.upper()}] Step 3: Loading weights from .h5 file...")
+            model.load_weights(output_path, by_name=True, skip_mismatch=False)
+            logger.info(f"[{gen_name.upper()}] ✅ Weights loaded successfully!")
+            
             GENERATORS[gen_name] = model
+            
+            # Cleanup
             os.remove(output_path)
             logger.info(f"[{gen_name.upper()}] Cleaned up temporary file")
+            
         except Exception as e:
-            logger.error(f"[{gen_name.upper()}] ❌ Error loading model: {str(e)}")
+            logger.error(f"[{gen_name.upper()}] ❌ Error: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
     else:
         logger.error(f"[{gen_name.upper()}] Download failed, skipping model load")
+    
     logger.info("")
+
+# ============================================================================
+# IMAGE PROCESSING
+# ============================================================================
 
 def preprocess_image(image_bytes):
     img = Image.open(io.BytesIO(image_bytes)).convert('L')
@@ -140,11 +246,15 @@ def preprocess_image(image_bytes):
     return img_array
 
 def postprocess_image(tensor):
-    img_array = tensor[0]
+    img_array = tensor<sup>0</sup>
     img_array = ((img_array + 1.0) * 127.5).astype(np.uint8)
     img_array = img_array[:, :, 0]
     img = Image.fromarray(img_array, mode='L')
     return img
+
+# ============================================================================
+# API ENDPOINTS
+# ============================================================================
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -152,7 +262,7 @@ def health():
         'status': 'healthy',
         'models_loaded': len(GENERATORS) == 4,
         'loaded_models': list(GENERATORS.keys()),
-        'version': '6.1'
+        'version': '6.2'
     })
 
 @app.route('/convert', methods=['POST'])
@@ -168,6 +278,7 @@ def convert():
             file_key = f'image{i}'
             if file_key not in request.files:
                 continue
+            
             file = request.files[file_key]
             if file.filename == '':
                 continue
@@ -208,10 +319,17 @@ def convert():
                     zip_file.writestr(f'{img_key}_{gen_name}.png', img_buffer.getvalue())
         
         zip_buffer.seek(0)
-        return send_file(zip_buffer, mimetype='application/zip', as_attachment=True, download_name='converted_images.zip')
+        return send_file(
+            zip_buffer,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name='converted_images.zip'
+        )
     
     except Exception as e:
         logger.error(f"Error in convert: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 
 logger.info("="*80)
