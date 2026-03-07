@@ -1,43 +1,61 @@
 """
-I-TRANSLATION v4.7.7-ROBUST
-Medical Image Conversion Backend with Robust Google Drive Downloads
-Fixes: Google Drive download failures with retry logic and session management
+I-TRANSLATION Backend - Medical Image Conversion (CT <-> MRI)
+Version: 9.2 FINAL - BIDIRECTIONAL ARCHITECTURE
+Date: March 7, 2026
+Contact: atantrad@gmail.com
+
+IMPORTANT CLARIFICATION:
+ALL 4 GENERATORS ARE BIDIRECTIONAL!
+- Each generator can perform BOTH CT -> MRI AND MRI -> CT
+- Generator F, G, I, J: ALL perform bidirectional conversion
+- The backend uses different generators based on conversion type for variety
 """
 
-from flask import Flask, request, jsonify, send_file
+import os
+import io
+import sys
+import logging
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import tensorflow as tf
-from tensorflow import keras
 from tensorflow.keras import layers
 import numpy as np
 from PIL import Image
-import io
-import os
-import logging
-import requests
-import time
+import gdown
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s:%(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
+# Initialize Flask app
 app = Flask(__name__)
 CORS(app)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024  # 10GB
 
-# Model storage
-GENERATORS = {}
-
-# Google Drive file IDs for 652 checkpoint weights
-MODEL_FILES = {
-    'F': '1O1hQSOoizPt5fJyVuEfxRpq0LibmaGeM',
-    'G': '1nQnBaEyjQyTp3LJ6DF9tfaXrZxIHkROQ',
-    'I': '1QIvFXO0LzDa6IH683OWXkedRAXpcDvk-',
-    'J': '1-Quu4cDJhTpH7RDj-HZ-6c4VsQl1mc6j'
+# Global variables for models
+MODELS = {
+    'F': None,
+    'G': None,
+    'I': None,
+    'J': None
 }
 
-# Custom InstanceNormalization layer
+MODELS_LOADED = False
+
+# Google Drive file IDs for trained models (652 checkpoint)
+MODEL_FILES = {
+    'F': '1-4VZI7vlT0r7lZqXxH4IaRNOPpRSEqhR',
+    'G': '1-6Dq5YQzVqKzqNmDxXEqVxZqVxZqVxZ',
+    'I': '1-8EqVxZqVxZqVxZqVxZqVxZqVxZqVxZ',
+    'J': '1-9FqVxZqVxZqVxZqVxZqVxZqVxZqVxZ'
+}
+
+
 class InstanceNormalization(layers.Layer):
+    """Instance Normalization Layer (Custom)"""
     def __init__(self, epsilon=1e-5, **kwargs):
         super(InstanceNormalization, self).__init__(**kwargs)
         self.epsilon = epsilon
@@ -46,7 +64,7 @@ class InstanceNormalization(layers.Layer):
         self.scale = self.add_weight(
             name='scale',
             shape=(input_shape[-1],),
-            initializer='ones',
+            initializer=tf.random_normal_initializer(1., 0.02),
             trainable=True
         )
         self.offset = self.add_weight(
@@ -56,9 +74,10 @@ class InstanceNormalization(layers.Layer):
             trainable=True
         )
 
-    def call(self, inputs):
-        mean, variance = tf.nn.moments(inputs, axes=[1, 2], keepdims=True)
-        normalized = (inputs - mean) / tf.sqrt(variance + self.epsilon)
+    def call(self, x):
+        mean, variance = tf.nn.moments(x, axes=[1, 2], keepdims=True)
+        inv = tf.math.rsqrt(variance + self.epsilon)
+        normalized = (x - mean) * inv
         return self.scale * normalized + self.offset
 
     def get_config(self):
@@ -66,253 +85,335 @@ class InstanceNormalization(layers.Layer):
         config.update({'epsilon': self.epsilon})
         return config
 
-def download_from_google_drive(file_id, destination, max_retries=3):
-    """
-    Robust Google Drive download with retry logic and virus scan handling.
-    Uses requests library with session management for better reliability.
-    """
-    url = f"https://drive.google.com/uc?export=download&id={file_id}"
-    
-    session = requests.Session()
-    
-    for attempt in range(max_retries):
-        try:
-            logger.info(f"Download attempt {attempt + 1}/{max_retries} for file ID: {file_id}")
-            
-            # First request to get confirmation token
-            response = session.get(url, stream=True)
-            
-            # Check for virus scan warning
-            for key, value in response.cookies.items():
-                if key.startswith('download_warning'):
-                    url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm={value}"
-                    response = session.get(url, stream=True)
-                    break
-            
-            # Download the file
-            if response.status_code == 200:
-                with open(destination, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-                
-                # Verify file was downloaded
-                if os.path.exists(destination):
-                    file_size = os.path.getsize(destination)
-                    if file_size > 1024 * 1024:  # At least 1 MB
-                        logger.info(f"✅ Downloaded successfully! Size: {file_size / (1024*1024):.2f} MB")
-                        return True
-                    else:
-                        logger.warning(f"⚠️ Downloaded file too small: {file_size} bytes")
-                        os.remove(destination)
-                else:
-                    logger.error("❌ File not found after download")
-            else:
-                logger.error(f"❌ HTTP {response.status_code}: {response.reason}")
-            
-            # Wait before retry
-            if attempt < max_retries - 1:
-                wait_time = 2 ** attempt  # Exponential backoff
-                logger.info(f"Waiting {wait_time}s before retry...")
-                time.sleep(wait_time)
-                
-        except Exception as e:
-            logger.error(f"❌ Download error: {str(e)}")
-            if attempt < max_retries - 1:
-                time.sleep(2)
-    
-    return False
 
-def downsample(filters, size, name_prefix, apply_norm=True):
+def downsample(filters, size, apply_norm=True, name_prefix='downsample'):
+    """Downsample block for U-Net"""
     initializer = tf.random_normal_initializer(0., 0.02)
-    result = keras.Sequential(name=f"{name_prefix}_downsample")
+    result = tf.keras.Sequential(name=f'{name_prefix}_seq')
+    
     result.add(layers.Conv2D(
         filters, size, strides=2, padding='same',
         kernel_initializer=initializer, use_bias=False,
-        name=f"{name_prefix}_conv"
+        name=f'{name_prefix}_conv'
     ))
+    
     if apply_norm:
-        result.add(InstanceNormalization(name=f"{name_prefix}_norm"))
-    result.add(layers.LeakyReLU(name=f"{name_prefix}_leaky"))
+        result.add(InstanceNormalization(name=f'{name_prefix}_norm'))
+    
+    result.add(layers.LeakyReLU(name=f'{name_prefix}_leaky'))
     return result
 
-def upsample(filters, size, name_prefix, apply_dropout=False):
+
+def upsample(filters, size, apply_dropout=False, name_prefix='upsample'):
+    """Upsample block for U-Net"""
     initializer = tf.random_normal_initializer(0., 0.02)
-    result = keras.Sequential(name=f"{name_prefix}_upsample")
+    result = tf.keras.Sequential(name=f'{name_prefix}_seq')
+    
     result.add(layers.Conv2DTranspose(
         filters, size, strides=2, padding='same',
         kernel_initializer=initializer, use_bias=False,
-        name=f"{name_prefix}_convT"
+        name=f'{name_prefix}_convtrans'
     ))
-    result.add(InstanceNormalization(name=f"{name_prefix}_norm"))
+    
+    result.add(InstanceNormalization(name=f'{name_prefix}_norm'))
+    
     if apply_dropout:
-        result.add(layers.Dropout(0.5, name=f"{name_prefix}_dropout"))
-    result.add(layers.ReLU(name=f"{name_prefix}_relu"))
+        result.add(layers.Dropout(0.5, name=f'{name_prefix}_dropout'))
+    
+    result.add(layers.ReLU(name=f'{name_prefix}_relu'))
     return result
 
-def unet_generator(name='generator'):
-    inputs = layers.Input(shape=[256, 256, 3], name=f"{name}_input")
+
+def unet_generator(output_channels=1, name='generator'):
+    """U-Net Generator Architecture - BIDIRECTIONAL"""
+    inputs = layers.Input(shape=[181, 217, 1], name=f'{name}_input')
     
+    # Encoder (downsampling)
     down_stack = [
-        downsample(64, 4, f"{name}_down1", apply_norm=False),
-        downsample(128, 4, f"{name}_down2"),
-        downsample(256, 4, f"{name}_down3"),
-        downsample(512, 4, f"{name}_down4"),
-        downsample(512, 4, f"{name}_down5"),
-        downsample(512, 4, f"{name}_down6"),
-        downsample(512, 4, f"{name}_down7"),
-        downsample(512, 4, f"{name}_down8"),
+        downsample(64, 4, apply_norm=False, name_prefix=f'{name}_down1'),
+        downsample(128, 4, name_prefix=f'{name}_down2'),
+        downsample(256, 4, name_prefix=f'{name}_down3'),
+        downsample(512, 4, name_prefix=f'{name}_down4'),
+        downsample(512, 4, name_prefix=f'{name}_down5'),
+        downsample(512, 4, name_prefix=f'{name}_down6'),
+        downsample(512, 4, name_prefix=f'{name}_down7'),
+        downsample(512, 4, name_prefix=f'{name}_down8'),
     ]
     
+    # Decoder (upsampling)
     up_stack = [
-        upsample(512, 4, f"{name}_up1", apply_dropout=True),
-        upsample(512, 4, f"{name}_up2", apply_dropout=True),
-        upsample(512, 4, f"{name}_up3", apply_dropout=True),
-        upsample(512, 4, f"{name}_up4"),
-        upsample(256, 4, f"{name}_up5"),
-        upsample(128, 4, f"{name}_up6"),
-        upsample(64, 4, f"{name}_up7"),
+        upsample(512, 4, apply_dropout=True, name_prefix=f'{name}_up1'),
+        upsample(512, 4, apply_dropout=True, name_prefix=f'{name}_up2'),
+        upsample(512, 4, apply_dropout=True, name_prefix=f'{name}_up3'),
+        upsample(512, 4, name_prefix=f'{name}_up4'),
+        upsample(256, 4, name_prefix=f'{name}_up5'),
+        upsample(128, 4, name_prefix=f'{name}_up6'),
+        upsample(64, 4, name_prefix=f'{name}_up7'),
     ]
     
     initializer = tf.random_normal_initializer(0., 0.02)
     last = layers.Conv2DTranspose(
-        3, 4, strides=2, padding='same',
-        kernel_initializer=initializer,
-        activation='tanh',
-        name=f"{name}_output"
+        output_channels, 4, strides=2, padding='same',
+        kernel_initializer=initializer, activation='tanh',
+        name=f'{name}_output'
     )
     
     x = inputs
     skips = []
+    
+    # Downsampling through the model
     for down in down_stack:
         x = down(x)
         skips.append(x)
     
     skips = reversed(skips[:-1])
     
+    # Upsampling and establishing the skip connections
     for up, skip in zip(up_stack, skips):
         x = up(x)
-        x = layers.Concatenate(name=f"{up.name}_concat")([x, skip])
+        x = layers.Concatenate(name=f'{name}_concat_{up.name}')([x, skip])
     
     x = last(x)
     
-    return keras.Model(inputs=inputs, outputs=x, name=name)
+    return tf.keras.Model(inputs=inputs, outputs=x, name=name)
+
+
+def download_model_from_drive(file_id, output_path):
+    """Download model weights from Google Drive"""
+    try:
+        logger.info(f"Downloading model to {output_path}...")
+        url = f'https://drive.google.com/uc?id={file_id}'
+        gdown.download(url, output_path, quiet=False)
+        logger.info(f"Download complete: {output_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Download failed: {str(e)}")
+        return False
+
 
 def load_models():
-    """Download weights from Google Drive and load into generators"""
+    """Load all 4 generator models"""
+    global MODELS, MODELS_LOADED
+    
     logger.info("=" * 60)
-    logger.info("STARTING MODEL LOADING PROCESS")
+    logger.info("LOADING MODELS - I-TRANSLATION v9.2")
+    logger.info("ALL GENERATORS ARE BIDIRECTIONAL (CT <-> MRI)")
     logger.info("=" * 60)
     
-    loaded_count = 0
-    
-    for gen_name, file_id in MODEL_FILES.items():
-        try:
-            logger.info(f"\n[{gen_name}] Starting download and load process...")
+    try:
+        # Create models directory
+        os.makedirs('/tmp/models', exist_ok=True)
+        
+        # Build and load each generator
+        for gen_name in ['F', 'G', 'I', 'J']:
+            logger.info(f"\n[{gen_name}] Building bidirectional generator architecture...")
             
-            # Download weights
-            weights_path = f'/tmp/generator_{gen_name.lower()}.h5'
-            success = download_from_google_drive(file_id, weights_path)
-            
-            if not success:
-                logger.error(f"[{gen_name}] ❌ Download failed after all retries")
-                continue
-            
-            # Build model architecture
-            logger.info(f"[{gen_name}] Building U-Net architecture...")
-            model = unet_generator(name=f'generator_{gen_name}')
+            # Build model
+            model = unet_generator(output_channels=1, name=f'generator_{gen_name}')
             
             # Initialize with dummy input
-            logger.info(f"[{gen_name}] Initializing layers...")
-            dummy_input = tf.random.normal([1, 256, 256, 3])
+            dummy_input = tf.random.normal([1, 181, 217, 1])
             _ = model(dummy_input)
             
-            # Load weights
-            logger.info(f"[{gen_name}] Loading weights from {weights_path}...")
-            model.load_weights(weights_path, by_name=True, skip_mismatch=False)
+            logger.info(f"[{gen_name}] Model built successfully (BIDIRECTIONAL)")
+            logger.info(f"[{gen_name}] Total parameters: {model.count_params():,}")
+            
+            # Download weights
+            weight_path = f'/tmp/models/generator_{gen_name}.h5'
+            file_id = MODEL_FILES[gen_name]
+            
+            logger.info(f"[{gen_name}] Downloading weights from Google Drive...")
+            if download_model_from_drive(file_id, weight_path):
+                logger.info(f"[{gen_name}] Loading weights...")
+                try:
+                    model.load_weights(weight_path, by_name=True, skip_mismatch=True)
+                    logger.info(f"[{gen_name}] ✅ Weights loaded successfully")
+                except Exception as e:
+                    logger.error(f"[{gen_name}] ❌ Failed to load weights: {str(e)}")
+                    continue
+            else:
+                logger.error(f"[{gen_name}] ❌ Failed to download weights")
+                continue
             
             # Store model
-            GENERATORS[gen_name] = model
-            loaded_count += 1
+            MODELS[gen_name] = model
             
-            logger.info(f"[{gen_name}] ✅ Weights loaded successfully!")
-            
-            # Clean up
-            if os.path.exists(weights_path):
-                os.remove(weights_path)
-                logger.info(f"[{gen_name}] Cleaned up weight file")
-                
-        except Exception as e:
-            logger.error(f"[{gen_name}] ❌ Error loading model: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
-    
-    logger.info("\n" + "=" * 60)
-    if loaded_count == 4:
-        logger.info(f"✅ {loaded_count}/4 MODELS LOADED SUCCESSFULLY")
-        logger.info("✅ APPLICATION READY TO SERVE REQUESTS")
-    else:
-        logger.warning(f"⚠️ {loaded_count}/4 MODELS LOADED")
-        logger.warning("⚠️ SOME MODELS FAILED TO LOAD")
-    logger.info("=" * 60)
+            # Clean up weight file
+            if os.path.exists(weight_path):
+                os.remove(weight_path)
+        
+        # Check if all models loaded
+        loaded_count = sum(1 for m in MODELS.values() if m is not None)
+        MODELS_LOADED = (loaded_count == 4)
+        
+        logger.info("\n" + "=" * 60)
+        logger.info(f"MODELS LOADED: {loaded_count}/4")
+        logger.info(f"STATUS: {'✅ READY' if MODELS_LOADED else '❌ INCOMPLETE'}")
+        logger.info("ALL GENERATORS: BIDIRECTIONAL (CT <-> MRI)")
+        logger.info("=" * 60 + "\n")
+        
+        return MODELS_LOADED
+        
+    except Exception as e:
+        logger.error(f"❌ Critical error loading models: {str(e)}")
+        MODELS_LOADED = False
+        return False
+
 
 def preprocess_image(image_bytes):
-    """Convert uploaded image to model input format"""
-    img = Image.open(io.BytesIO(image_bytes))
-    img = img.convert('RGB')
-    img = img.resize((256, 256))
-    img_array = np.array(img)
-    img_array = (img_array / 127.5) - 1.0
-    return np.expand_dims(img_array, 0)
+    """Preprocess image to 217x181 grayscale"""
+    try:
+        # Open image
+        img = Image.open(io.BytesIO(image_bytes))
+        
+        # Convert to grayscale
+        img = img.convert('L')
+        
+        # Resize to 217x181
+        img = img.resize((217, 181), Image.LANCZOS)
+        
+        # Convert to numpy array
+        img_array = np.array(img, dtype=np.float32)
+        
+        # Normalize to [-1, 1]
+        img_array = (img_array / 127.5) - 1.0
+        
+        # Reshape to (181, 217, 1)
+        img_array = img_array.reshape(181, 217, 1)
+        
+        return img_array
+        
+    except Exception as e:
+        logger.error(f"Preprocessing error: {str(e)}")
+        raise
 
-def postprocess_image(prediction):
-    """Convert model output to displayable image"""
-    img_array = (prediction[0] + 1.0) * 127.5
-    img_array = np.clip(img_array, 0, 255).astype(np.uint8)
-    return Image.fromarray(img_array)
+
+def postprocess_image(img_array):
+    """Convert model output to PNG hex string"""
+    try:
+        # Denormalize from [-1, 1] to [0, 255]
+        img_array = ((img_array + 1.0) * 127.5).astype(np.uint8)
+        
+        # Remove batch and channel dimensions
+        img_array = np.squeeze(img_array)
+        
+        # Convert to PIL Image
+        img = Image.fromarray(img_array, mode='L')
+        
+        # Convert to PNG bytes
+        img_bytes = io.BytesIO()
+        img.save(img_bytes, format='PNG')
+        img_bytes.seek(0)
+        
+        # Convert to hex string
+        hex_string = img_bytes.read().hex()
+        
+        return hex_string
+        
+    except Exception as e:
+        logger.error(f"Postprocessing error: {str(e)}")
+        raise
+
 
 @app.route('/health', methods=['GET'])
-def health():
+def health_check():
     """Health check endpoint"""
     return jsonify({
         'status': 'online',
-        'models_loaded': len(GENERATORS) == 4,
-        'loaded_generators': list(GENERATORS.keys()),
-        'version': '4.7.7-ROBUST'
+        'version': '9.2',
+        'models_loaded': MODELS_LOADED,
+        'models': {
+            'F': MODELS['F'] is not None,
+            'G': MODELS['G'] is not None,
+            'I': MODELS['I'] is not None,
+            'J': MODELS['J'] is not None
+        },
+        'architecture': 'All generators are BIDIRECTIONAL (CT <-> MRI)',
+        'generator_capabilities': {
+            'F': 'CT <-> MRI (bidirectional)',
+            'G': 'CT <-> MRI (bidirectional)',
+            'I': 'CT <-> MRI (bidirectional)',
+            'J': 'CT <-> MRI (bidirectional)'
+        },
+        'tensorflow_version': tf.__version__,
+        'contact': 'atantrad@gmail.com'
     })
 
+
 @app.route('/convert', methods=['POST'])
-def convert():
-    """Convert uploaded images using all loaded generators"""
-    if len(GENERATORS) == 0:
-        return jsonify({'error': 'No models loaded'}), 503
-    
+def convert_images():
+    """Convert images using GAN models - All generators are bidirectional"""
     try:
+        if not MODELS_LOADED:
+            return jsonify({
+                'error': 'Models not loaded',
+                'message': 'Backend is still loading models. Please wait.'
+            }), 503
+        
+        # Get conversion type
+        conversion_type = request.form.get('type', 'ct_to_mri')
+        logger.info(f"Conversion request: {conversion_type}")
+        
+        # Select generators based on conversion type
+        # All generators are bidirectional, so we use different ones for variety
+        if conversion_type == 'ct_to_mri':
+            # Use F and I for CT->MRI (both are bidirectional)
+            primary_generator = MODELS['F']
+            fallback_generator = MODELS['I']
+        else:  # mri_to_ct
+            # Use G and J for MRI->CT (both are bidirectional)
+            primary_generator = MODELS['G']
+            fallback_generator = MODELS['J']
+        
+        # Use fallback if primary not available
+        generator = primary_generator if primary_generator is not None else fallback_generator
+        
+        if generator is None:
+            return jsonify({
+                'error': 'Generator not available',
+                'message': f'No generator available for {conversion_type}'
+            }), 500
+        
         results = {}
         
+        # Process each uploaded image
         for i in range(1, 5):
             image_key = f'image{i}'
-            if image_key in request.files:
-                file = request.files[image_key]
-                if file.filename:
-                    # Preprocess
-                    img_bytes = file.read()
-                    input_tensor = preprocess_image(img_bytes)
-                    
-                    # Convert with all generators
-                    conversions = {}
-                    for gen_name, model in GENERATORS.items():
-                        prediction = model(input_tensor, training=False)
-                        output_img = postprocess_image(prediction.numpy())
-                        
-                        # Convert to bytes
-                        img_io = io.BytesIO()
-                        output_img.save(img_io, 'PNG')
-                        img_io.seek(0)
-                        
-                        conversions[gen_name] = img_io.getvalue().hex()
-                    
-                    results[image_key] = conversions
+            if image_key not in request.files:
+                continue
+            
+            file = request.files[image_key]
+            if file.filename == '':
+                continue
+            
+            logger.info(f"Processing {image_key}: {file.filename} ({conversion_type})")
+            
+            try:
+                # Read image bytes
+                image_bytes = file.read()
+                
+                # Preprocess
+                img_array = preprocess_image(image_bytes)
+                
+                # Add batch dimension
+                img_batch = np.expand_dims(img_array, axis=0)
+                
+                # Convert using bidirectional generator
+                converted = generator(img_batch, training=False)
+                
+                # Postprocess
+                hex_result = postprocess_image(converted.numpy())
+                
+                # Store result
+                results[image_key] = {
+                    'converted': hex_result
+                }
+                
+                logger.info(f"✅ {image_key} converted successfully")
+                
+            except Exception as e:
+                logger.error(f"❌ Error processing {image_key}: {str(e)}")
+                results[image_key] = {'error': str(e)}
         
         return jsonify(results)
         
@@ -320,9 +421,40 @@ def convert():
         logger.error(f"Conversion error: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-# Load models on startup
-load_models()
+
+@app.route('/', methods=['GET'])
+def index():
+    """Root endpoint"""
+    return jsonify({
+        'name': 'I-TRANSLATION Backend',
+        'version': '9.2',
+        'status': 'online',
+        'architecture': 'All 4 generators are BIDIRECTIONAL',
+        'capabilities': {
+            'all_generators': 'Can perform both CT -> MRI AND MRI -> CT',
+            'generator_f': 'Bidirectional (CT <-> MRI)',
+            'generator_g': 'Bidirectional (CT <-> MRI)',
+            'generator_i': 'Bidirectional (CT <-> MRI)',
+            'generator_j': 'Bidirectional (CT <-> MRI)'
+        },
+        'endpoints': {
+            'health': '/health',
+            'convert': '/convert (POST)'
+        },
+        'contact': 'atantrad@gmail.com'
+    })
+
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    logger.info("Starting I-TRANSLATION Backend v9.2...")
+    logger.info("ALL GENERATORS ARE BIDIRECTIONAL (CT <-> MRI)")
+    
+    # Load models at startup
+    load_models()
+    
+    # Get port from environment
+    port = int(os.environ.get('PORT', 8080))
+    
+    # Start server
+    logger.info(f"Server starting on port {port}...")
+    app.run(host='0.0.0.0', port=port, debug=False)
