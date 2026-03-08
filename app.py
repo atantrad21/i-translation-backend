@@ -227,9 +227,9 @@ def load_models():
             dummy_input = tf.random.normal([1, 256, 256, 3])
             _ = model(dummy_input)
             
-            # Load weights
+            # Load weights (WITHOUT by_name to match Colab behavior)
             logger.info(f"[{gen_name}] Loading weights from {weights_path}...")
-            model.load_weights(weights_path, by_name=True, skip_mismatch=False)
+            model.load_weights(weights_path)
             
             # Store model
             GENERATORS[gen_name] = model
