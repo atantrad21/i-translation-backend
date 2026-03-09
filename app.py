@@ -145,31 +145,48 @@ def download_from_google_drive(file_id, destination):
     response = session.get(url, stream=True, timeout=60)
     
     logger.info(f"Status: {response.status_code}")
+    logger.info(f"Content-Type: {response.headers.get('Content-Type', 'unknown')}")
     
-    # Handle confirmation for large files
+    # Check if we got HTML (confirmation page for large files)
     if 'text/html' in response.headers.get('Content-Type', ''):
+        logger.info("⚠️ Got HTML response, extracting confirmation token...")
+        
+        # Look for confirmation token in cookies
         for key, value in response.cookies.items():
             if key.startswith('download_warning'):
-                logger.info("✅ Using confirmation token")
+                logger.info(f"✅ Found confirmation token")
                 response = session.get(url, params={'confirm': value}, stream=True, timeout=60)
                 break
     
-    # Download in chunks
+    # Download file in chunks
     total_size = 0
+    chunk_count = 0
+    
     with open(destination, 'wb') as f:
         for chunk in response.iter_content(chunk_size=8192):
             if chunk:
                 f.write(chunk)
                 total_size += len(chunk)
+                chunk_count += 1
+                
+                # Log progress every 1000 chunks (~8MB)
+                if chunk_count % 1000 == 0:
+                    mb_downloaded = total_size / (1024 * 1024)
+                    logger.info(f"Downloaded: {mb_downloaded:.2f} MB...")
     
     file_size_mb = total_size / (1024 * 1024)
-    logger.info(f"✅ Downloaded: {file_size_mb:.2f} MB")
+    logger.info(f"✅ Download complete: {file_size_mb:.2f} MB")
     
-    if file_size_mb < 1:
-        raise Exception(f"File too small: {file_size_mb:.2f} MB")
+    # Verify file was created and has content
+    if not os.path.exists(destination):
+        raise Exception("File was not created")
     
-    return destination
-
+    actual_size = os.path.getsize(destination) / (1024 * 1024)
+    if actual_size < 1:
+        raise Exception(f"File too small: {actual_size:.2f} MB")
+    
+    logger.info(f"✅ File verified: {actual_size:.2f} MB")
+    return True
 # ============================================================================
 # MODEL LOADING
 # ============================================================================
