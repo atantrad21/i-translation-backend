@@ -1,8 +1,4 @@
 """
-I-TRANSLATION BACKEND v4.8.3 - RENDER DEPLOYMENT
-Correct 64x64 Grayscale Architecture (Checkpoint 652)
-UPDATED GOOGLE DRIVE FILE IDs - USER'S FILES
-"""
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -14,18 +10,20 @@ from PIL import Image
 import io
 import os
 import gdown
-import sys
-
-print("\n" + "="*80, flush=True)
-print("I-TRANSLATION BACKEND v4.8.3 - RENDER DEPLOYMENT", flush=True)
-print("Architecture: 64x64 Grayscale (Checkpoint 652)", flush=True)
-print("UPDATED GOOGLE DRIVE FILE IDs", flush=True)
-print("="*80 + "\n", flush=True)
+import logging
 
 # ============================================================================
-# CUSTOM LAYERS (EXACT FROM COLAB)
+# LOGGING CONFIGURATION
 # ============================================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(levelname)s] %(message)s'
+)
+logger = logging.getLogger(__name__)
 
+# ============================================================================
+# CUSTOM LAYERS - Instance Normalization
+# ============================================================================
 class InstanceNormalization(layers.Layer):
     def __init__(self, epsilon=1e-5, **kwargs):
         super(InstanceNormalization, self).__init__(**kwargs)
@@ -44,7 +42,6 @@ class InstanceNormalization(layers.Layer):
             initializer='zeros',
             trainable=True
         )
-        super(InstanceNormalization, self).build(input_shape)
 
     def call(self, inputs):
         mean, variance = tf.nn.moments(inputs, axes=[1, 2], keepdims=True)
@@ -56,327 +53,242 @@ class InstanceNormalization(layers.Layer):
         config.update({"epsilon": self.epsilon})
         return config
 
-def downsample(filters, size, apply_norm=True, name=None):
+# ============================================================================
+# MODEL ARCHITECTURE - U-Net Generator (64x64 Grayscale)
+# ============================================================================
+def downsample(filters, size, apply_norm=True):
     initializer = tf.random_normal_initializer(0., 0.02)
-    result = keras.Sequential(name=name)
-    result.add(layers.Conv2D(filters, size, strides=2, padding='same',
-                            kernel_initializer=initializer, use_bias=False,
-                            name=f'{name}_conv' if name else None))
+    result = keras.Sequential()
+    result.add(layers.Conv2D(
+        filters, size, strides=2, padding='same',
+        kernel_initializer=initializer, use_bias=False
+    ))
     if apply_norm:
-        result.add(InstanceNormalization(name=f'{name}_norm' if name else None))
-    result.add(layers.LeakyReLU(name=f'{name}_leaky' if name else None))
+        result.add(InstanceNormalization())
+    result.add(layers.LeakyReLU())
     return result
 
-def upsample(filters, size, apply_dropout=False, name=None):
+def upsample(filters, size, apply_dropout=False):
     initializer = tf.random_normal_initializer(0., 0.02)
-    result = keras.Sequential(name=name)
-    result.add(layers.Conv2DTranspose(filters, size, strides=2, padding='same',
-                                     kernel_initializer=initializer, use_bias=False,
-                                     name=f'{name}_conv' if name else None))
-    result.add(InstanceNormalization(name=f'{name}_norm' if name else None))
+    result = keras.Sequential()
+    result.add(layers.Conv2DTranspose(
+        filters, size, strides=2, padding='same',
+        kernel_initializer=initializer, use_bias=False
+    ))
+    result.add(InstanceNormalization())
     if apply_dropout:
-        result.add(layers.Dropout(0.5, name=f'{name}_dropout' if name else None))
-    result.add(layers.ReLU(name=f'{name}_relu' if name else None))
+        result.add(layers.Dropout(0.5))
+    result.add(layers.ReLU())
     return result
 
-def unet_generator(output_channels=1, name='generator'):
-    """
-    U-Net Generator - EXACT ARCHITECTURE FROM COLAB CHECKPOINT 652
-    Input: [64, 64, 1] grayscale
-    Output: [64, 64, 1] grayscale
-    """
-    inputs = layers.Input(shape=[64, 64, 1], name=f'{name}_input')
-
-    # Down stack: 6 layers (EXACT FROM COLAB)
+def unet_generator():
+    inputs = layers.Input(shape=[64, 64, 1])
+    
+    # Downsampling: 6 layers
     down_stack = [
-        downsample(128, 4, False, name=f'{name}_down1'),
-        downsample(256, 4, name=f'{name}_down2'),
-        downsample(256, 4, name=f'{name}_down3'),
-        downsample(256, 4, name=f'{name}_down4'),
-        downsample(256, 4, name=f'{name}_down5'),
-        downsample(256, 4, name=f'{name}_down6')
+        downsample(128, 4, apply_norm=False),  # (32, 32, 128)
+        downsample(256, 4),                     # (16, 16, 256)
+        downsample(256, 4),                     # (8, 8, 256)
+        downsample(256, 4),                     # (4, 4, 256)
+        downsample(256, 4),                     # (2, 2, 256)
+        downsample(256, 4),                     # (1, 1, 256)
     ]
-
-    # Up stack: 5 layers (EXACT FROM COLAB)
+    
+    # Upsampling: 5 layers
     up_stack = [
-        upsample(256, 4, True, name=f'{name}_up1'),
-        upsample(256, 4, True, name=f'{name}_up2'),
-        upsample(256, 4, name=f'{name}_up3'),
-        upsample(256, 4, name=f'{name}_up4'),
-        upsample(128, 4, name=f'{name}_up5')
+        upsample(256, 4, apply_dropout=True),   # (2, 2, 256)
+        upsample(256, 4, apply_dropout=True),   # (4, 4, 256)
+        upsample(256, 4, apply_dropout=True),   # (8, 8, 256)
+        upsample(256, 4),                       # (16, 16, 256)
+        upsample(128, 4),                       # (32, 32, 128)
     ]
-
+    
     initializer = tf.random_normal_initializer(0., 0.02)
-    last = layers.Conv2DTranspose(output_channels, 4, strides=2, padding='same',
-                                 kernel_initializer=initializer, activation='tanh',
-                                 name=f'{name}_output')
-
-    concat = layers.Concatenate()
-
+    last = layers.Conv2DTranspose(
+        1, 4, strides=2, padding='same',
+        kernel_initializer=initializer, activation='tanh'
+    )  # (64, 64, 1)
+    
     x = inputs
     skips = []
+    
     for down in down_stack:
         x = down(x)
         skips.append(x)
-
+    
     skips = reversed(skips[:-1])
-
+    
     for up, skip in zip(up_stack, skips):
         x = up(x)
-        x = concat([x, skip])
-
+        x = layers.Concatenate()([x, skip])
+    
     x = last(x)
-    return keras.Model(inputs=inputs, outputs=x, name=name)
+    return keras.Model(inputs=inputs, outputs=x)
 
 # ============================================================================
-# GLOBAL VARIABLES
+# GOOGLE DRIVE FILE IDs - USER'S PUBLIC FILES
 # ============================================================================
-
-GENERATORS = {}
-MODELS_LOADED = False
-
-# UPDATED FILE IDs FROM USER'S GOOGLE DRIVE
-GOOGLE_DRIVE_IDS = {
-    'f': '1O1hQSOoizPt5fJyVuEfxRpq0LibmaGeM',  # Link 1 - Generator F
-    'g': '1nQnBaEyjQyTp3LJ6DF9tfaXrZxIHkROQ',  # Link 2 - Generator G
-    'i': '1QIvFXO0LzDa6IH683OWXkedRAXpcDvk-',  # Link 3 - Generator I
-    'j': '1-Quu4cDJhTpH7RDj-HZ-6c4VsQl1mc6j'   # Link 4 - Generator J
+WEIGHT_FILES = {
+    'F': '1O1hQSOoizPt5fJyVuEfxRpq0LibmaGeM',  # 50.16 MB
+    'G': '1nQnBaEyjQyTp3LJ6DF9tfaXrZxIHkROQ',  # 50.16 MB
+    'I': '1QIvFXO0LzDa6IH683OWXkedRAXpcDvk-',  # 50.16 MB
+    'J': '1-Quu4cDJhTpH7RDj-HZ-6c4VsQl1mc6j',  # 50.16 MB
 }
 
-print("[CONFIG] Using user's Google Drive file IDs:", flush=True)
-for gen_name, file_id in GOOGLE_DRIVE_IDS.items():
-    print(f"  Generator {gen_name.upper()}: {file_id}", flush=True)
-print("", flush=True)
+# ============================================================================
+# GLOBAL MODEL STORAGE
+# ============================================================================
+MODELS = {}
+MODELS_LOADED = False
 
 # ============================================================================
-# MODEL LOADING FUNCTIONS
+# MODEL INITIALIZATION - Downloads and loads all 4 generators
 # ============================================================================
-
-def download_weights():
-    """Download weights from Google Drive using gdown"""
-    print("\n[DOWNLOAD] Starting weight downloads from Google Drive...", flush=True)
+def initialize_models():
+    global MODELS, MODELS_LOADED
     
-    for gen_name, file_id in GOOGLE_DRIVE_IDS.items():
-        output_path = f'/tmp/generator_{gen_name}.h5'
+    logger.info("=" * 60)
+    logger.info("INITIALIZING MODELS AT STARTUP...")
+    logger.info("=" * 60)
+    
+    try:
+        # STEP 1: Download weights from Google Drive
+        logger.info("[DOWNLOAD] Starting weight downloads from Google Drive...")
+        temp_dir = '/tmp/weights'
+        os.makedirs(temp_dir, exist_ok=True)
         
-        if os.path.exists(output_path):
-            file_size = os.path.getsize(output_path) / (1024 * 1024)
-            print(f"[{gen_name.upper()}] ✓ Already downloaded ({file_size:.2f} MB)", flush=True)
-            continue
-        
-        try:
-            print(f"[{gen_name.upper()}] Downloading from Google Drive...", flush=True)
-            print(f"[{gen_name.upper()}] File ID: {file_id}", flush=True)
+        weight_paths = {}
+        for name, file_id in WEIGHT_FILES.items():
+            output_path = os.path.join(temp_dir, f'generator_{name.lower()}.h5')
             url = f'https://drive.google.com/uc?id={file_id}'
+            
+            logger.info(f"[{name}] Downloading from {file_id}...")
             gdown.download(url, output_path, quiet=False)
             
             if os.path.exists(output_path):
-                file_size = os.path.getsize(output_path) / (1024 * 1024)
-                print(f"[{gen_name.upper()}] ✓ Downloaded successfully ({file_size:.2f} MB)", flush=True)
+                size_mb = os.path.getsize(output_path) / (1024 * 1024)
+                logger.info(f"[{name}] ✓ Downloaded successfully ({size_mb:.2f} MB)")
+                weight_paths[name] = output_path
             else:
-                print(f"[{gen_name.upper()}] ✗ Download failed: File not created", flush=True)
+                logger.error(f"[{name}] ✗ Download failed!")
                 return False
-                
-        except Exception as e:
-            print(f"[{gen_name.upper()}] ✗ Download failed: {str(e)}", flush=True)
-            import traceback
-            traceback.print_exc()
-            return False
-    
-    print("\n[DOWNLOAD] ✓ All weights downloaded successfully!\n", flush=True)
-    return True
-
-def load_models():
-    """Load all 4 generator models"""
-    global GENERATORS, MODELS_LOADED
-    
-    print("[MODELS] Building and loading generators...", flush=True)
-    
-    for gen_name in ['f', 'g', 'i', 'j']:
-        weight_path = f'/tmp/generator_{gen_name}.h5'
         
-        if not os.path.exists(weight_path):
-            print(f"[{gen_name.upper()}] ✗ Weight file not found: {weight_path}", flush=True)
-            continue
+        # STEP 2: Build and load generators
+        logger.info("[MODELS] Building and loading generators...")
+        for name in ['F', 'G', 'I', 'J']:
+            logger.info(f"[{name}] Building U-Net architecture...")
+            generator = unet_generator()
+            
+            logger.info(f"[{name}] Loading weights from {weight_paths[name]}...")
+            generator.load_weights(weight_paths[name])
+            
+            MODELS[name] = generator
+            logger.info(f"[{name}] ✓ SUCCESS!")
         
-        try:
-            file_size = os.path.getsize(weight_path) / (1024 * 1024)
-            print(f"\n[{gen_name.upper()}] Found weights ({file_size:.2f} MB)", flush=True)
-            
-            print(f"[{gen_name.upper()}] Building 64x64 grayscale architecture...", flush=True)
-            model = unet_generator(name=f'generator_{gen_name}')
-            
-            print(f"[{gen_name.upper()}] Initializing layers...", flush=True)
-            dummy_input = tf.zeros((1, 64, 64, 1))
-            _ = model(dummy_input, training=False)
-            
-            print(f"[{gen_name.upper()}] Loading weights...", flush=True)
-            model.load_weights(weight_path)
-            
-            print(f"[{gen_name.upper()}] ✓ SUCCESS!", flush=True)
-            GENERATORS[gen_name] = model
-            
-        except Exception as e:
-            print(f"[{gen_name.upper()}] ✗ FAILED: {str(e)}", flush=True)
-            import traceback
-            traceback.print_exc()
-    
-    print("\n" + "="*80, flush=True)
-    print(f"MODELS LOADED: {len(GENERATORS)}/4", flush=True)
-    print("="*80 + "\n", flush=True)
-    
-    MODELS_LOADED = (len(GENERATORS) == 4)
-    return MODELS_LOADED
-
-def initialize_models():
-    """Initialize models - called on first request"""
-    global MODELS_LOADED
-    
-    if MODELS_LOADED:
-        print("[INIT] Models already loaded, skipping...", flush=True)
+        MODELS_LOADED = True
+        logger.info("=" * 60)
+        logger.info(f"MODELS LOADED: {len(MODELS)}/4")
+        logger.info("[STARTUP] ✓ ALL SYSTEMS READY!")
+        logger.info("=" * 60)
         return True
-    
-    print(f"[INIT] Initializing models (PID: {os.getpid()})...", flush=True)
-    
-    if download_weights():
-        if load_models():
-            print("[INIT] ✓ ALL SYSTEMS READY!", flush=True)
-            return True
-        else:
-            print("[INIT] ✗ Model loading failed!", flush=True)
-            return False
-    else:
-        print("[INIT] ✗ Weight download failed!", flush=True)
+        
+    except Exception as e:
+        logger.error(f"[STARTUP] ✗ INITIALIZATION FAILED: {str(e)}")
+        MODELS_LOADED = False
         return False
 
 # ============================================================================
-# FLASK APP
+# INITIALIZE MODELS AT STARTUP (BEFORE FLASK APP)
 # ============================================================================
+logger.info("=" * 60)
+logger.info("STARTING I-TRANSLATION BACKEND v4.8.4")
+logger.info("=" * 60)
+initialize_models()
 
+# ============================================================================
+# FLASK APP CREATION (AFTER MODELS ARE LOADED)
+# ============================================================================
 app = Flask(__name__)
 CORS(app)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024  # 10GB
 
 # ============================================================================
-# IMAGE PROCESSING
+# IMAGE PROCESSING FUNCTIONS
 # ============================================================================
-
 def preprocess_image(image_bytes):
-    """Convert input image to 64x64 grayscale tensor"""
+    """Convert uploaded image to 64x64 grayscale tensor"""
     img = Image.open(io.BytesIO(image_bytes)).convert('L')
     img = img.resize((64, 64), Image.LANCZOS)
     img_array = np.array(img, dtype=np.float32)
-    img_array = (img_array / 127.5) - 1.0
-    img_array = img_array[np.newaxis, :, :, np.newaxis]
-    return tf.constant(img_array)
+    img_array = (img_array / 127.5) - 1.0  # Normalize to [-1, 1]
+    return np.expand_dims(np.expand_dims(img_array, axis=-1), axis=0)
 
-def postprocess_image(output_tensor, upscale_to=256):
-    """Convert output tensor to image bytes (upscaled for display)"""
-    output_array = output_tensor.numpy()<sup>0</sup>
-    output_array = ((output_array + 1.0) * 127.5).astype(np.uint8)
-    output_array = output_array[:, :, 0]
+def postprocess_image(tensor):
+    """Convert model output tensor to PNG bytes (upscaled to 256x256)"""
+    tensor = (tensor<sup>0</sup> + 1.0) * 127.5  # Denormalize to [0, 255]
+    tensor = np.clip(tensor, 0, 255).astype(np.uint8)
+    img = Image.fromarray(tensor[:, :, 0], mode='L')
+    img = img.resize((256, 256), Image.LANCZOS)  # Upscale for display
     
-    img = Image.fromarray(output_array, mode='L')
-    
-    if upscale_to:
-        img = img.resize((upscale_to, upscale_to), Image.LANCZOS)
-    
-    img_bytes = io.BytesIO()
-    img.save(img_bytes, format='PNG')
-    img_bytes.seek(0)
-    return img_bytes.read()
+    output = io.BytesIO()
+    img.save(output, format='PNG')
+    return output.getvalue()
 
 # ============================================================================
 # API ENDPOINTS
 # ============================================================================
-
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
-    # Try to initialize models if not loaded
-    if not MODELS_LOADED:
-        print("[HEALTH] Models not loaded, attempting to initialize...", flush=True)
-        initialize_models()
-    
     return jsonify({
         'status': 'online',
-        'version': '4.8.3',
-        'architecture': '64x64 grayscale',
-        'checkpoint': 652,
         'models_loaded': MODELS_LOADED,
         'generators': {
-            'f': 'f' in GENERATORS,
-            'g': 'g' in GENERATORS,
-            'i': 'i' in GENERATORS,
-            'j': 'j' in GENERATORS
-        }
+            'F': 'F' in MODELS,
+            'G': 'G' in MODELS,
+            'I': 'I' in MODELS,
+            'J': 'J' in MODELS,
+        },
+        'version': 'v4.8.4',
+        'architecture': '64x64 grayscale, 6 down + 5 up layers'
     })
 
 @app.route('/convert', methods=['POST'])
 def convert():
-    """Convert CT to MRI or MRI to CT"""
-    # Try to initialize models if not loaded
+    """Convert medical image using all 4 generators"""
     if not MODELS_LOADED:
-        print("[CONVERT] Models not loaded, attempting to initialize...", flush=True)
-        initialize_models()
-    
-    if not MODELS_LOADED:
-        return jsonify({'error': 'Models not loaded'}), 503
-    
-    if 'image' not in request.files:
-        return jsonify({'error': 'No image provided'}), 400
+        return jsonify({'error': 'Models not loaded yet'}), 503
     
     try:
+        # Get uploaded image
+        if 'image' not in request.files:
+            return jsonify({'error': 'No image provided'}), 400
+        
         image_file = request.files['image']
         image_bytes = image_file.read()
         
+        # Preprocess
         input_tensor = preprocess_image(image_bytes)
         
+        # Run through all 4 generators
         results = {}
-        for gen_name in ['f', 'g', 'i', 'j']:
-            output_tensor = GENERATORS[gen_name](input_tensor, training=False)
-            output_bytes = postprocess_image(output_tensor, upscale_to=256)
-            
-            import base64
-            output_b64 = base64.b64encode(output_bytes).decode('utf-8')
-            results[f'generator_{gen_name}'] = output_b64
+        for name in ['F', 'G', 'I', 'J']:
+            output_tensor = MODELS[name](input_tensor, training=False)
+            output_bytes = postprocess_image(output_tensor.numpy())
+            results[name] = output_bytes.hex()  # Send as hex string
         
         return jsonify({
             'success': True,
-            'results': results,
-            'info': {
-                'input_size': '64x64 grayscale',
-                'output_size': '256x256 grayscale (upscaled)',
-                'checkpoint': 652
-            }
+            'outputs': results
         })
-    
+        
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Conversion error: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/', methods=['GET'])
-def index():
-    """Root endpoint"""
-    return jsonify({
-        'service': 'I-Translation Backend',
-        'version': '4.8.3',
-        'architecture': '64x64 grayscale',
-        'checkpoint': 652,
-        'status': 'online' if MODELS_LOADED else 'loading',
-        'endpoints': {
-            'health': '/health',
-            'convert': '/convert (POST with image file)'
-        }
-    })
-
 # ============================================================================
-# STARTUP
+# SERVER STARTUP
 # ============================================================================
-
 if __name__ == '__main__':
-    print("\n[STARTUP] Direct execution mode - initializing models...", flush=True)
-    initialize_models()
     port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port)
