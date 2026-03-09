@@ -1,8 +1,5 @@
-Flask==3.0.0
-flask-cors==4.0.0
-tensorflow==2.15.0
-pillow==10.2.0
-numpy==1.26.4
-gdown==5.1.0
-gunicorn==21.2.0
-requests==2.31.0
+tensorflow==2.21.0
+gradio==4.16.0
+pillow==11.0.0
+numpy==2.2.1
+requests==2.32.3
