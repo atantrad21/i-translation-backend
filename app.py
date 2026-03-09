@@ -1,3 +1,4 @@
+...
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import tensorflow as tf
@@ -17,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 print("=" * 70)
-print("🚀 I-TRANSLATION BACKEND v5.0 - 652 CHECKPOINT")
+print("🚀 I-TRANSLATION BACKEND v5.0 FINAL")
 print("=" * 70)
 
 class InstanceNormalization(layers.Layer):
@@ -119,10 +120,10 @@ def unet_generator():
     return keras.Model(inputs=inputs, outputs=x)
 
 FILE_IDS = {
-    'F': '1dMvJtRBb32BnGI8xc5lJd0U-NbJh90fT',
-    'G': '11VoWUJ5Iq30HgBfLyTF5mnczk7DLiOFN',
+    'F': '1O1hQSOoizPt5fJyVuEfxRpq0LibmaGeM',
+    'G': '1nQnBaEyjQyTp3LJ6DF9tfaXrZxIHkROQ',
     'I': '1QIvFXO0LzDa6IH683OWXkedRAXpcDvk-',
-    'J': '1tNSVLfubqvFv5ACR_8B8Dp47UnsC9-He'
+    'J': '1-Quu4cDJhTpH7RDj-HZ-6c4VsQl1mc6j'
 }
 
 MODELS = {}
@@ -136,12 +137,13 @@ def download_and_load_models():
     try:
         LOADING_PROGRESS = "Downloading models..."
         logger.info("=" * 70)
-        logger.info("🔧 DOWNLOADING 652 CHECKPOINT MODELS")
+        logger.info("🔧 DOWNLOADING MODELS FROM GOOGLE DRIVE")
         logger.info("=" * 70)
         
         for name, file_id in FILE_IDS.items():
             LOADING_PROGRESS = f"Downloading Generator {name}..."
             logger.info(f"\n📥 Downloading Generator {name}...")
+            logger.info(f"   File ID: {file_id}")
             
             output_path = f'/tmp/generator_{name.lower()}.h5'
             url = f'https://drive.google.com/uc?id={file_id}'
@@ -153,6 +155,9 @@ def download_and_load_models():
             
             file_size = os.path.getsize(output_path) / (1024 * 1024)
             logger.info(f"✅ Generator {name} downloaded: {file_size:.2f} MB")
+            
+            if file_size < 10:
+                raise Exception(f"Generator {name} file too small ({file_size:.2f} MB) - likely HTML error page")
             
             LOADING_PROGRESS = f"Building Generator {name}..."
             logger.info(f"🔨 Building Generator {name} architecture...")
@@ -228,7 +233,7 @@ def health():
             'I': 'I' in MODELS,
             'J': 'J' in MODELS
         },
-        'version': 'v5.0-652-checkpoint'
+        'version': 'v5.0-final'
     })
 
 @app.route('/convert', methods=['POST'])
