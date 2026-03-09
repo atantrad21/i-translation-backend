@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 import io
 import os
-import gdown
+import requests
 import logging
 
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
@@ -17,26 +17,13 @@ class InstanceNormalization(layers.Layer):
     def __init__(self, epsilon=1e-5, **kwargs):
         super(InstanceNormalization, self).__init__(**kwargs)
         self.epsilon = epsilon
-
     def build(self, input_shape):
-        self.scale = self.add_weight(
-            name='scale',
-            shape=(input_shape[-1],),
-            initializer='ones',
-            trainable=True
-        )
-        self.offset = self.add_weight(
-            name='offset',
-            shape=(input_shape[-1],),
-            initializer='zeros',
-            trainable=True
-        )
-
+        self.scale = self.add_weight(name='scale', shape=(input_shape[-1],), initializer='ones', trainable=True)
+        self.offset = self.add_weight(name='offset', shape=(input_shape[-1],), initializer='zeros', trainable=True)
     def call(self, inputs):
         mean, variance = tf.nn.moments(inputs, axes=[1, 2], keepdims=True)
         normalized = (inputs - mean) / tf.sqrt(variance + self.epsilon)
         return self.scale * normalized + self.offset
-
     def get_config(self):
         config = super(InstanceNormalization, self).get_config()
         config.update({"epsilon": self.epsilon})
@@ -63,21 +50,8 @@ def upsample(filters, size, apply_dropout=False):
 
 def unet_generator():
     inputs = layers.Input(shape=[64, 64, 1])
-    down_stack = [
-        downsample(128, 4, apply_norm=False),
-        downsample(256, 4),
-        downsample(256, 4),
-        downsample(256, 4),
-        downsample(256, 4),
-        downsample(256, 4),
-    ]
-    up_stack = [
-        upsample(256, 4, apply_dropout=True),
-        upsample(256, 4, apply_dropout=True),
-        upsample(256, 4, apply_dropout=True),
-        upsample(256, 4),
-        upsample(128, 4),
-    ]
+    down_stack = [downsample(128, 4, apply_norm=False), downsample(256, 4), downsample(256, 4), downsample(256, 4), downsample(256, 4), downsample(256, 4)]
+    up_stack = [upsample(256, 4, apply_dropout=True), upsample(256, 4, apply_dropout=True), upsample(256, 4, apply_dropout=True), upsample(256, 4), upsample(128, 4)]
     initializer = tf.random_normal_initializer(0., 0.02)
     last = layers.Conv2DTranspose(1, 4, strides=2, padding='same', kernel_initializer=initializer, activation='tanh')
     x = inputs
@@ -96,11 +70,31 @@ WEIGHT_FILES = {
     'F': '1O1hQSOoizPt5fJyVuEfxRpq0LibmaGeM',
     'G': '1nQnBaEyjQyTp3LJ6DF9tfaXrZxIHkROQ',
     'I': '1QIvFXO0LzDa6IH683OWXkedRAXpcDvk-',
-    'J': '1-Quu4cDJhTpH7RDj-HZ-6c4VsQl1mc6j',
+    'J': '1-Quu4cDJhTpH7RDj-HZ-6c4VsQl1mc6j'
 }
 
 MODELS = {}
 MODELS_LOADED = False
+
+def download_from_google_drive(file_id, output_path):
+    logger.info('Attempting download with requests library')
+    url = 'https://drive.google.com/uc?export=download&id=' + file_id
+    session = requests.Session()
+    response = session.get(url, stream=True)
+    for key, value in response.cookies.items():
+        if key.startswith('download_warning'):
+            url = url + '&confirm=' + value
+            response = session.get(url, stream=True)
+            break
+    chunk_size = 32768
+    total_size = 0
+    with open(output_path, 'wb') as f:
+        for chunk in response.iter_content(chunk_size):
+            if chunk:
+                f.write(chunk)
+                total_size += len(chunk)
+    logger.info('Downloaded ' + str(total_size) + ' bytes')
+    return total_size > 0
 
 def initialize_models():
     global MODELS, MODELS_LOADED
@@ -112,10 +106,9 @@ def initialize_models():
         weight_paths = {}
         for name, file_id in WEIGHT_FILES.items():
             output_path = os.path.join(temp_dir, 'generator_' + name.lower() + '.h5')
-            url = 'https://drive.google.com/uc?id=' + file_id
             logger.info('Downloading ' + name + ' from ' + file_id)
-            gdown.download(url, output_path, quiet=False)
-            if os.path.exists(output_path):
+            success = download_from_google_drive(file_id, output_path)
+            if success and os.path.exists(output_path):
                 size_mb = os.path.getsize(output_path) / (1024 * 1024)
                 logger.info(name + ' downloaded successfully ' + str(size_mb) + ' MB')
                 weight_paths[name] = output_path
@@ -136,10 +129,12 @@ def initialize_models():
         return True
     except Exception as e:
         logger.error('INITIALIZATION FAILED: ' + str(e))
+        import traceback
+        logger.error(traceback.format_exc())
         MODELS_LOADED = False
         return False
 
-logger.info("STARTING I-TRANSLATION BACKEND v4.8.4")
+logger.info("STARTING I-TRANSLATION BACKEND v4.8.5")
 initialize_models()
 
 app = Flask(__name__)
@@ -151,14 +146,17 @@ def preprocess_image(image_bytes):
     img = img.resize((64, 64), Image.LANCZOS)
     img_array = np.array(img, dtype=np.float32)
     img_array = (img_array / 127.5) - 1.0
-    return np.expand_dims(np.expand_dims(img_array, axis=-1), axis=0)
+    img_array = np.expand_dims(img_array, axis=-1)
+    return np.expand_dims(img_array, axis=0)
 
 def postprocess_image(tensor):
-    first_elem = tensor[0]
-    scaled = (first_elem + 1.0) * 127.5
-    clipped = np.clip(scaled, 0, 255).astype(np.uint8)
-    grayscale = clipped[:, :, 0]
-    img = Image.fromarray(grayscale, mode='L')
+    img_data = tensor.numpy()
+    img_data = img_data<sup>0</sup>
+    img_data = (img_data + 1.0) * 127.5
+    img_data = np.clip(img_data, 0, 255)
+    img_data = img_data.astype(np.uint8)
+    img_data = img_data[:, :, 0]
+    img = Image.fromarray(img_data, mode='L')
     img = img.resize((256, 256), Image.LANCZOS)
     output = io.BytesIO()
     img.save(output, format='PNG')
@@ -166,17 +164,7 @@ def postprocess_image(tensor):
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({
-        'status': 'online',
-        'models_loaded': MODELS_LOADED,
-        'generators': {
-            'F': 'F' in MODELS,
-            'G': 'G' in MODELS,
-            'I': 'I' in MODELS,
-            'J': 'J' in MODELS,
-        },
-        'version': 'v4.8.4'
-    })
+    return jsonify({'status': 'online', 'models_loaded': MODELS_LOADED, 'generators': {'F': 'F' in MODELS, 'G': 'G' in MODELS, 'I': 'I' in MODELS, 'J': 'J' in MODELS}, 'version': 'v4.8.5'})
 
 @app.route('/convert', methods=['POST'])
 def convert():
@@ -191,7 +179,7 @@ def convert():
         results = {}
         for name in ['F', 'G', 'I', 'J']:
             output_tensor = MODELS[name](input_tensor, training=False)
-            output_bytes = postprocess_image(output_tensor.numpy())
+            output_bytes = postprocess_image(output_tensor)
             results[name] = output_bytes.hex()
         return jsonify({'success': True, 'outputs': results})
     except Exception as e:
