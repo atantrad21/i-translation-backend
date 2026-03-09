@@ -9,9 +9,24 @@ import io
 import os
 import requests
 import logging
+import sys
 
-logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
+# FORCE UNBUFFERED OUTPUT
+sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
+sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(levelname)s] %(message)s',
+    stream=sys.stdout,
+    force=True
+)
 logger = logging.getLogger(__name__)
+
+# IMMEDIATE LOG TO VERIFY LOGGING WORKS
+print("=" * 70, flush=True)
+print("🚀 MODULE LOADING STARTED", flush=True)
+print("=" * 70, flush=True)
 
 class InstanceNormalization(layers.Layer):
     def __init__(self, epsilon=1e-5, **kwargs):
@@ -77,7 +92,7 @@ MODELS = {}
 MODELS_LOADED = False
 
 def download_from_google_drive(file_id, output_path):
-    logger.info('Attempting download with requests library')
+    print(f"📥 Starting download for file_id: {file_id}", flush=True)
     url = 'https://drive.google.com/uc?export=download&id=' + file_id
     session = requests.Session()
     response = session.get(url, stream=True)
@@ -93,48 +108,71 @@ def download_from_google_drive(file_id, output_path):
             if chunk:
                 f.write(chunk)
                 total_size += len(chunk)
-    logger.info('Downloaded ' + str(total_size) + ' bytes')
+                if total_size % (1024 * 1024) == 0:  # Log every MB
+                    print(f"   Downloaded: {total_size / (1024*1024):.1f} MB", flush=True)
+    print(f"✅ Download complete: {total_size / (1024*1024):.2f} MB", flush=True)
     return total_size > 0
 
 def initialize_models():
     global MODELS, MODELS_LOADED
-    logger.info("INITIALIZING MODELS AT STARTUP")
+    print("=" * 70, flush=True)
+    print("🔧 INITIALIZING MODELS AT STARTUP", flush=True)
+    print("=" * 70, flush=True)
     try:
-        logger.info("Starting weight downloads from Google Drive")
+        print("📦 Creating temp directory for weights...", flush=True)
         temp_dir = '/tmp/weights'
         os.makedirs(temp_dir, exist_ok=True)
+        print(f"✅ Temp directory created: {temp_dir}", flush=True)
+        
         weight_paths = {}
         for name, file_id in WEIGHT_FILES.items():
             output_path = os.path.join(temp_dir, 'generator_' + name.lower() + '.h5')
-            logger.info('Downloading ' + name + ' from ' + file_id)
+            print(f"\n📥 Downloading Generator {name}...", flush=True)
+            print(f"   File ID: {file_id}", flush=True)
+            print(f"   Output: {output_path}", flush=True)
+            
             success = download_from_google_drive(file_id, output_path)
+            
             if success and os.path.exists(output_path):
                 size_mb = os.path.getsize(output_path) / (1024 * 1024)
-                logger.info(name + ' downloaded successfully ' + str(size_mb) + ' MB')
+                print(f"✅ Generator {name} downloaded: {size_mb:.2f} MB", flush=True)
                 weight_paths[name] = output_path
             else:
-                logger.error(name + ' download failed')
+                print(f"❌ Generator {name} download FAILED", flush=True)
                 return False
-        logger.info("Building and loading generators")
+        
+        print("\n" + "=" * 70, flush=True)
+        print("🏗️  BUILDING AND LOADING GENERATORS", flush=True)
+        print("=" * 70, flush=True)
+        
         for name in ['F', 'G', 'I', 'J']:
-            logger.info('Building ' + name + ' U-Net architecture')
+            print(f"\n🔨 Building Generator {name} architecture...", flush=True)
             generator = unet_generator()
-            logger.info('Loading ' + name + ' weights from ' + weight_paths[name])
+            print(f"✅ Generator {name} architecture built", flush=True)
+            
+            print(f"📂 Loading weights from: {weight_paths[name]}", flush=True)
             generator.load_weights(weight_paths[name])
+            print(f"✅ Generator {name} weights loaded", flush=True)
+            
             MODELS[name] = generator
-            logger.info(name + ' SUCCESS')
+            print(f"✅ Generator {name} SUCCESS", flush=True)
+        
         MODELS_LOADED = True
-        logger.info('MODELS LOADED: ' + str(len(MODELS)) + '/4')
-        logger.info("ALL SYSTEMS READY")
+        print("\n" + "=" * 70, flush=True)
+        print(f"🎉 ALL MODELS LOADED: {len(MODELS)}/4", flush=True)
+        print("=" * 70, flush=True)
         return True
     except Exception as e:
-        logger.error('INITIALIZATION FAILED: ' + str(e))
+        print("\n" + "=" * 70, flush=True)
+        print(f"❌ INITIALIZATION FAILED", flush=True)
+        print(f"❌ Error: {str(e)}", flush=True)
+        print("=" * 70, flush=True)
         import traceback
-        logger.error(traceback.format_exc())
+        traceback.print_exc()
         MODELS_LOADED = False
         return False
 
-logger.info("STARTING I-TRANSLATION BACKEND v4.8.6")
+print("🚀 STARTING I-TRANSLATION BACKEND v4.8.7", flush=True)
 initialize_models()
 
 app = Flask(__name__)
@@ -164,7 +202,7 @@ def postprocess_image(tensor):
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'online', 'models_loaded': MODELS_LOADED, 'generators': {'F': 'F' in MODELS, 'G': 'G' in MODELS, 'I': 'I' in MODELS, 'J': 'J' in MODELS}, 'version': 'v4.8.6'})
+    return jsonify({'status': 'online', 'models_loaded': MODELS_LOADED, 'generators': {'F': 'F' in MODELS, 'G': 'G' in MODELS, 'I': 'I' in MODELS, 'J': 'J' in MODELS}, 'version': 'v4.8.7'})
 
 @app.route('/convert', methods=['POST'])
 def convert():
@@ -185,6 +223,8 @@ def convert():
     except Exception as e:
         logger.error('Conversion error: ' + str(e))
         return jsonify({'error': str(e)}), 500
+
+print("✅ Flask app created and routes registered", flush=True)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
