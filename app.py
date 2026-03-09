@@ -1,4 +1,11 @@
 """
+I-Translation Backend v4.8.4 - STARTUP MODEL LOADING
+=====================================================
+FIX: Models initialize at STARTUP (before Flask app) instead of lazy loading
+- Solves stuck issue where models never loaded after service went live
+- All 4 generators download and load BEFORE server accepts requests
+- Users Google Drive file IDs embedded (publicly accessible)
+"""
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -86,28 +93,28 @@ def unet_generator():
     
     # Downsampling: 6 layers
     down_stack = [
-        downsample(128, 4, apply_norm=False),  # (32, 32, 128)
-        downsample(256, 4),                     # (16, 16, 256)
-        downsample(256, 4),                     # (8, 8, 256)
-        downsample(256, 4),                     # (4, 4, 256)
-        downsample(256, 4),                     # (2, 2, 256)
-        downsample(256, 4),                     # (1, 1, 256)
+        downsample(128, 4, apply_norm=False),
+        downsample(256, 4),
+        downsample(256, 4),
+        downsample(256, 4),
+        downsample(256, 4),
+        downsample(256, 4),
     ]
     
     # Upsampling: 5 layers
     up_stack = [
-        upsample(256, 4, apply_dropout=True),   # (2, 2, 256)
-        upsample(256, 4, apply_dropout=True),   # (4, 4, 256)
-        upsample(256, 4, apply_dropout=True),   # (8, 8, 256)
-        upsample(256, 4),                       # (16, 16, 256)
-        upsample(128, 4),                       # (32, 32, 128)
+        upsample(256, 4, apply_dropout=True),
+        upsample(256, 4, apply_dropout=True),
+        upsample(256, 4, apply_dropout=True),
+        upsample(256, 4),
+        upsample(128, 4),
     ]
     
     initializer = tf.random_normal_initializer(0., 0.02)
     last = layers.Conv2DTranspose(
         1, 4, strides=2, padding='same',
         kernel_initializer=initializer, activation='tanh'
-    )  # (64, 64, 1)
+    )
     
     x = inputs
     skips = []
@@ -126,13 +133,13 @@ def unet_generator():
     return keras.Model(inputs=inputs, outputs=x)
 
 # ============================================================================
-# GOOGLE DRIVE FILE IDs - USER'S PUBLIC FILES
+# GOOGLE DRIVE FILE IDs - USER PUBLIC FILES
 # ============================================================================
 WEIGHT_FILES = {
-    'F': '1O1hQSOoizPt5fJyVuEfxRpq0LibmaGeM',  # 50.16 MB
-    'G': '1nQnBaEyjQyTp3LJ6DF9tfaXrZxIHkROQ',  # 50.16 MB
-    'I': '1QIvFXO0LzDa6IH683OWXkedRAXpcDvk-',  # 50.16 MB
-    'J': '1-Quu4cDJhTpH7RDj-HZ-6c4VsQl1mc6j',  # 50.16 MB
+    'F': '1O1hQSOoizPt5fJyVuEfxRpq0LibmaGeM',
+    'G': '1nQnBaEyjQyTp3LJ6DF9tfaXrZxIHkROQ',
+    'I': '1QIvFXO0LzDa6IH683OWXkedRAXpcDvk-',
+    'J': '1-Quu4cDJhTpH7RDj-HZ-6c4VsQl1mc6j',
 }
 
 # ============================================================================
@@ -167,10 +174,10 @@ def initialize_models():
             
             if os.path.exists(output_path):
                 size_mb = os.path.getsize(output_path) / (1024 * 1024)
-                logger.info(f"[{name}] ✓ Downloaded successfully ({size_mb:.2f} MB)")
+                logger.info(f"[{name}] Downloaded successfully ({size_mb:.2f} MB)")
                 weight_paths[name] = output_path
             else:
-                logger.error(f"[{name}] ✗ Download failed!")
+                logger.error(f"[{name}] Download failed!")
                 return False
         
         # STEP 2: Build and load generators
@@ -183,17 +190,17 @@ def initialize_models():
             generator.load_weights(weight_paths[name])
             
             MODELS[name] = generator
-            logger.info(f"[{name}] ✓ SUCCESS!")
+            logger.info(f"[{name}] SUCCESS!")
         
         MODELS_LOADED = True
         logger.info("=" * 60)
         logger.info(f"MODELS LOADED: {len(MODELS)}/4")
-        logger.info("[STARTUP] ✓ ALL SYSTEMS READY!")
+        logger.info("[STARTUP] ALL SYSTEMS READY!")
         logger.info("=" * 60)
         return True
         
     except Exception as e:
-        logger.error(f"[STARTUP] ✗ INITIALIZATION FAILED: {str(e)}")
+        logger.error(f"[STARTUP] INITIALIZATION FAILED: {str(e)}")
         MODELS_LOADED = False
         return False
 
@@ -210,25 +217,23 @@ initialize_models()
 # ============================================================================
 app = Flask(__name__)
 CORS(app)
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024  # 10GB
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024
 
 # ============================================================================
 # IMAGE PROCESSING FUNCTIONS
 # ============================================================================
 def preprocess_image(image_bytes):
-    """Convert uploaded image to 64x64 grayscale tensor"""
     img = Image.open(io.BytesIO(image_bytes)).convert('L')
     img = img.resize((64, 64), Image.LANCZOS)
     img_array = np.array(img, dtype=np.float32)
-    img_array = (img_array / 127.5) - 1.0  # Normalize to [-1, 1]
+    img_array = (img_array / 127.5) - 1.0
     return np.expand_dims(np.expand_dims(img_array, axis=-1), axis=0)
 
 def postprocess_image(tensor):
-    """Convert model output tensor to PNG bytes (upscaled to 256x256)"""
-    tensor = (tensor<sup>0</sup> + 1.0) * 127.5  # Denormalize to [0, 255]
+    tensor = (tensor<sup>0</sup> + 1.0) * 127.5
     tensor = np.clip(tensor, 0, 255).astype(np.uint8)
     img = Image.fromarray(tensor[:, :, 0], mode='L')
-    img = img.resize((256, 256), Image.LANCZOS)  # Upscale for display
+    img = img.resize((256, 256), Image.LANCZOS)
     
     output = io.BytesIO()
     img.save(output, format='PNG')
@@ -239,7 +244,6 @@ def postprocess_image(tensor):
 # ============================================================================
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint"""
     return jsonify({
         'status': 'online',
         'models_loaded': MODELS_LOADED,
@@ -250,32 +254,28 @@ def health():
             'J': 'J' in MODELS,
         },
         'version': 'v4.8.4',
-        'architecture': '64x64 grayscale, 6 down + 5 up layers'
+        'architecture': '64x64 grayscale 6 down 5 up layers'
     })
 
 @app.route('/convert', methods=['POST'])
 def convert():
-    """Convert medical image using all 4 generators"""
     if not MODELS_LOADED:
         return jsonify({'error': 'Models not loaded yet'}), 503
     
     try:
-        # Get uploaded image
         if 'image' not in request.files:
             return jsonify({'error': 'No image provided'}), 400
         
         image_file = request.files['image']
         image_bytes = image_file.read()
         
-        # Preprocess
         input_tensor = preprocess_image(image_bytes)
         
-        # Run through all 4 generators
         results = {}
         for name in ['F', 'G', 'I', 'J']:
             output_tensor = MODELS[name](input_tensor, training=False)
             output_bytes = postprocess_image(output_tensor.numpy())
-            results[name] = output_bytes.hex()  # Send as hex string
+            results[name] = output_bytes.hex()
         
         return jsonify({
             'success': True,
