@@ -1,7 +1,7 @@
 """
-I-TRANSLATION BACKEND v4.8.2 - RENDER DEPLOYMENT
+I-TRANSLATION BACKEND v4.8.3 - RENDER DEPLOYMENT
 Correct 64x64 Grayscale Architecture (Checkpoint 652)
-GUNICORN POST-FORK LOADING: Models load in worker processes
+UPDATED GOOGLE DRIVE FILE IDs - USER'S FILES
 """
 
 from flask import Flask, request, jsonify
@@ -17,9 +17,9 @@ import gdown
 import sys
 
 print("\n" + "="*80, flush=True)
-print("I-TRANSLATION BACKEND v4.8.2 - RENDER DEPLOYMENT", flush=True)
+print("I-TRANSLATION BACKEND v4.8.3 - RENDER DEPLOYMENT", flush=True)
 print("Architecture: 64x64 Grayscale (Checkpoint 652)", flush=True)
-print("POST-FORK LOADING: Models load in worker processes", flush=True)
+print("UPDATED GOOGLE DRIVE FILE IDs", flush=True)
 print("="*80 + "\n", flush=True)
 
 # ============================================================================
@@ -134,12 +134,19 @@ def unet_generator(output_channels=1, name='generator'):
 
 GENERATORS = {}
 MODELS_LOADED = False
+
+# UPDATED FILE IDs FROM USER'S GOOGLE DRIVE
 GOOGLE_DRIVE_IDS = {
-    'f': '1-4P7ls5G6aAjHd_LlbVXY_Sh-7lqxVWb',
-    'g': '1-3QOCyAFHXs_oBbzqEiRRmXhPJOPXhBZ',
-    'i': '1-2p7Cj_YLHMBPVQOTOLlx2HjXVgRgEE0',
-    'j': '1-8qiZVzqwcvW3xvxYhBo2_8vvvKfYU3K'
+    'f': '1O1hQSOoizPt5fJyVuEfxRpq0LibmaGeM',  # Link 1 - Generator F
+    'g': '1nQnBaEyjQyTp3LJ6DF9tfaXrZxIHkROQ',  # Link 2 - Generator G
+    'i': '1QIvFXO0LzDa6IH683OWXkedRAXpcDvk-',  # Link 3 - Generator I
+    'j': '1-Quu4cDJhTpH7RDj-HZ-6c4VsQl1mc6j'   # Link 4 - Generator J
 }
+
+print("[CONFIG] Using user's Google Drive file IDs:", flush=True)
+for gen_name, file_id in GOOGLE_DRIVE_IDS.items():
+    print(f"  Generator {gen_name.upper()}: {file_id}", flush=True)
+print("", flush=True)
 
 # ============================================================================
 # MODEL LOADING FUNCTIONS
@@ -159,6 +166,7 @@ def download_weights():
         
         try:
             print(f"[{gen_name.upper()}] Downloading from Google Drive...", flush=True)
+            print(f"[{gen_name.upper()}] File ID: {file_id}", flush=True)
             url = f'https://drive.google.com/uc?id={file_id}'
             gdown.download(url, output_path, quiet=False)
             
@@ -221,25 +229,24 @@ def load_models():
     return MODELS_LOADED
 
 def initialize_models():
-    """Initialize models - called by worker processes"""
+    """Initialize models - called on first request"""
     global MODELS_LOADED
     
     if MODELS_LOADED:
-        print("[WORKER] Models already loaded, skipping...", flush=True)
+        print("[INIT] Models already loaded, skipping...", flush=True)
         return True
     
-    print(f"[WORKER] Worker PID: {os.getpid()}", flush=True)
-    print("[WORKER] Initializing models in worker process...", flush=True)
+    print(f"[INIT] Initializing models (PID: {os.getpid()})...", flush=True)
     
     if download_weights():
         if load_models():
-            print("[WORKER] ✓ ALL SYSTEMS READY!", flush=True)
+            print("[INIT] ✓ ALL SYSTEMS READY!", flush=True)
             return True
         else:
-            print("[WORKER] ✗ Model loading failed!", flush=True)
+            print("[INIT] ✗ Model loading failed!", flush=True)
             return False
     else:
-        print("[WORKER] ✗ Weight download failed!", flush=True)
+        print("[INIT] ✗ Weight download failed!", flush=True)
         return False
 
 # ============================================================================
@@ -293,7 +300,7 @@ def health():
     
     return jsonify({
         'status': 'online',
-        'version': '4.8.2',
+        'version': '4.8.3',
         'architecture': '64x64 grayscale',
         'checkpoint': 652,
         'models_loaded': MODELS_LOADED,
@@ -354,7 +361,7 @@ def index():
     """Root endpoint"""
     return jsonify({
         'service': 'I-Translation Backend',
-        'version': '4.8.2',
+        'version': '4.8.3',
         'architecture': '64x64 grayscale',
         'checkpoint': 652,
         'status': 'online' if MODELS_LOADED else 'loading',
@@ -365,29 +372,11 @@ def index():
     })
 
 # ============================================================================
-# GUNICORN HOOKS (FOR PRODUCTION)
-# ============================================================================
-
-def on_starting(server):
-    """Called just before the master process is initialized."""
-    print("[GUNICORN] Master process starting...", flush=True)
-
-def when_ready(server):
-    """Called just after the server is started."""
-    print("[GUNICORN] Server is ready", flush=True)
-
-def post_fork(server, worker):
-    """Called just after a worker has been forked."""
-    print(f"\n[GUNICORN] Worker {worker.pid} forked", flush=True)
-    print(f"[GUNICORN] Initializing models in worker {worker.pid}...", flush=True)
-    initialize_models()
-
-# ============================================================================
-# DIRECT EXECUTION
+# STARTUP
 # ============================================================================
 
 if __name__ == '__main__':
-    print("\n[DIRECT] Running in direct execution mode", flush=True)
+    print("\n[STARTUP] Direct execution mode - initializing models...", flush=True)
     initialize_models()
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
