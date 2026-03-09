@@ -1,7 +1,7 @@
 """
-I-TRANSLATION v4.7.7-ROBUST
-Medical Image Conversion Backend with Robust Google Drive Downloads
-Fixes: Google Drive download failures with retry logic and session management
+I-TRANSLATION v4.7.8-COMPLETE-MODEL
+Medical Image Conversion Backend - Loads complete models OR weights
+Fixes: "0 saved layers" error by trying complete model loading first
 """
 
 from flask import Flask, request, jsonify, send_file
@@ -218,24 +218,39 @@ def load_models():
                 logger.error(f"[{gen_name}] ❌ Download failed after all retries")
                 continue
             
-            # Build model architecture
-            logger.info(f"[{gen_name}] Building U-Net architecture...")
-            model = unet_generator(name=f'generator_{gen_name}')
-            
-            # Initialize with dummy input
-            logger.info(f"[{gen_name}] Initializing layers...")
-            dummy_input = tf.random.normal([1, 256, 256, 3])
-            _ = model(dummy_input)
-            
-            # Load weights (WITHOUT by_name to match Colab behavior)
-            logger.info(f"[{gen_name}] Loading weights from {weights_path}...")
-            model.load_weights(weights_path)
+            # TRY LOADING AS COMPLETE MODEL FIRST
+            logger.info(f"[{gen_name}] Attempting to load as complete model...")
+            try:
+                model = tf.keras.models.load_model(
+                    weights_path,
+                    custom_objects={'InstanceNormalization': InstanceNormalization},
+                    compile=False
+                )
+                logger.info(f"[{gen_name}] ✅ Loaded as complete model!")
+                
+            except Exception as complete_model_error:
+                logger.info(f"[{gen_name}] Not a complete model, trying weights-only...")
+                logger.info(f"[{gen_name}] Complete model error: {str(complete_model_error)}")
+                
+                # Build model architecture
+                logger.info(f"[{gen_name}] Building U-Net architecture...")
+                model = unet_generator(name=f'generator_{gen_name}')
+                
+                # Initialize with dummy input
+                logger.info(f"[{gen_name}] Initializing layers...")
+                dummy_input = tf.random.normal([1, 256, 256, 3])
+                _ = model(dummy_input)
+                
+                # Load weights (WITHOUT by_name to match Colab behavior)
+                logger.info(f"[{gen_name}] Loading weights from {weights_path}...")
+                model.load_weights(weights_path)
+                logger.info(f"[{gen_name}] ✅ Loaded as weights-only!")
             
             # Store model
             GENERATORS[gen_name] = model
             loaded_count += 1
             
-            logger.info(f"[{gen_name}] ✅ Weights loaded successfully!")
+            logger.info(f"[{gen_name}] ✅ Model ready for inference!")
             
             # Clean up
             if os.path.exists(weights_path):
@@ -278,7 +293,7 @@ def health():
         'status': 'online',
         'models_loaded': len(GENERATORS) == 4,
         'loaded_generators': list(GENERATORS.keys()),
-        'version': '4.7.7-ROBUST'
+        'version': '4.7.8-COMPLETE-MODEL'
     })
 
 @app.route('/convert', methods=['POST'])
