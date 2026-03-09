@@ -1,6 +1,7 @@
 """
-I-TRANSLATION BACKEND v4.8.0 - RENDER DEPLOYMENT
+I-TRANSLATION BACKEND v4.8.1 - RENDER DEPLOYMENT (EAGER LOADING)
 Correct 64x64 Grayscale Architecture (Matches Checkpoint 652)
+Models load immediately when Gunicorn starts
 """
 
 from flask import Flask, request, jsonify
@@ -13,14 +14,12 @@ from PIL import Image
 import io
 import os
 import gdown
-
-app = Flask(__name__)
-CORS(app)
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024  # 10GB
+import sys
 
 print("\n" + "="*80)
-print("I-TRANSLATION BACKEND v4.8.0 - RENDER DEPLOYMENT")
+print("I-TRANSLATION BACKEND v4.8.1 - RENDER DEPLOYMENT")
 print("Architecture: 64x64 Grayscale (Checkpoint 652)")
+print("EAGER LOADING: Models load immediately on startup")
 print("="*80 + "\n")
 
 # ============================================================================
@@ -130,7 +129,7 @@ def unet_generator(output_channels=1, name='generator'):
     return keras.Model(inputs=inputs, outputs=x, name=name)
 
 # ============================================================================
-# MODEL LOADING
+# MODEL LOADING (EAGER - RUNS AT MODULE IMPORT)
 # ============================================================================
 
 GENERATORS = {}
@@ -144,6 +143,7 @@ GOOGLE_DRIVE_IDS = {
 def download_weights():
     """Download weights from Google Drive using gdown"""
     print("\n[DOWNLOAD] Starting weight downloads from Google Drive...")
+    sys.stdout.flush()
     
     for gen_name, file_id in GOOGLE_DRIVE_IDS.items():
         output_path = f'/tmp/generator_{gen_name}.h5'
@@ -151,60 +151,101 @@ def download_weights():
         if os.path.exists(output_path):
             file_size = os.path.getsize(output_path) / (1024 * 1024)
             print(f"[{gen_name.upper()}] ✓ Already downloaded ({file_size:.2f} MB)")
+            sys.stdout.flush()
             continue
         
         try:
             print(f"[{gen_name.upper()}] Downloading...")
+            sys.stdout.flush()
             url = f'https://drive.google.com/uc?id={file_id}'
             gdown.download(url, output_path, quiet=False)
             
             file_size = os.path.getsize(output_path) / (1024 * 1024)
             print(f"[{gen_name.upper()}] ✓ Downloaded successfully ({file_size:.2f} MB)")
+            sys.stdout.flush()
         except Exception as e:
             print(f"[{gen_name.upper()}] ✗ Download failed: {str(e)}")
+            sys.stdout.flush()
             return False
     
     print("\n[DOWNLOAD] ✓ All weights downloaded successfully!\n")
+    sys.stdout.flush()
     return True
 
 def load_models():
     """Load all 4 generator models"""
     print("[MODELS] Building and loading generators...")
+    sys.stdout.flush()
     
     for gen_name in ['f', 'g', 'i', 'j']:
         weight_path = f'/tmp/generator_{gen_name}.h5'
         
         if not os.path.exists(weight_path):
             print(f"[{gen_name.upper()}] ✗ Weight file not found: {weight_path}")
+            sys.stdout.flush()
             continue
         
         try:
             file_size = os.path.getsize(weight_path) / (1024 * 1024)
             print(f"\n[{gen_name.upper()}] Found weights ({file_size:.2f} MB)")
+            sys.stdout.flush()
             
             print(f"[{gen_name.upper()}] Building 64x64 grayscale architecture...")
+            sys.stdout.flush()
             model = unet_generator(name=f'generator_{gen_name}')
             
             print(f"[{gen_name.upper()}] Initializing layers...")
+            sys.stdout.flush()
             dummy_input = tf.zeros((1, 64, 64, 1))
             _ = model(dummy_input, training=False)
             
             print(f"[{gen_name.upper()}] Loading weights...")
+            sys.stdout.flush()
             model.load_weights(weight_path)
             
             print(f"[{gen_name.upper()}] ✓ SUCCESS!")
+            sys.stdout.flush()
             GENERATORS[gen_name] = model
             
         except Exception as e:
             print(f"[{gen_name.upper()}] ✗ FAILED: {str(e)}")
+            sys.stdout.flush()
             import traceback
             traceback.print_exc()
     
     print("\n" + "="*80)
     print(f"MODELS LOADED: {len(GENERATORS)}/4")
     print("="*80 + "\n")
+    sys.stdout.flush()
     
     return len(GENERATORS) == 4
+
+# ============================================================================
+# EAGER LOADING - RUNS IMMEDIATELY WHEN MODULE IS IMPORTED
+# ============================================================================
+
+print("[STARTUP] Initializing I-Translation Backend v4.8.1...")
+sys.stdout.flush()
+
+# Download and load models immediately
+if download_weights():
+    if load_models():
+        print("[STARTUP] ✓ ALL SYSTEMS READY!")
+        sys.stdout.flush()
+    else:
+        print("[STARTUP] ✗ Model loading failed!")
+        sys.stdout.flush()
+else:
+    print("[STARTUP] ✗ Weight download failed!")
+    sys.stdout.flush()
+
+# ============================================================================
+# FLASK APP (CREATED AFTER MODELS ARE LOADED)
+# ============================================================================
+
+app = Flask(__name__)
+CORS(app)
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024  # 10GB
 
 # ============================================================================
 # IMAGE PROCESSING
@@ -247,7 +288,7 @@ def health():
     """Health check endpoint"""
     return jsonify({
         'status': 'online',
-        'version': '4.8.0',
+        'version': '4.8.1',
         'architecture': '64x64 grayscale',
         'checkpoint': 652,
         'models_loaded': len(GENERATORS) == 4,
@@ -307,7 +348,7 @@ def index():
     """Root endpoint"""
     return jsonify({
         'service': 'I-Translation Backend',
-        'version': '4.8.0',
+        'version': '4.8.1',
         'architecture': '64x64 grayscale',
         'checkpoint': 652,
         'status': 'online' if len(GENERATORS) == 4 else 'loading',
@@ -318,23 +359,11 @@ def index():
     })
 
 # ============================================================================
-# STARTUP
+# STARTUP (FOR DIRECT EXECUTION ONLY)
 # ============================================================================
 
 if __name__ == '__main__':
-    print("\n[STARTUP] Initializing I-Translation Backend v4.8.0...")
-    
-    # Download weights
-    if download_weights():
-        # Load models
-        if load_models():
-            print("\n[STARTUP] ✓ ALL SYSTEMS READY!")
-            print("[STARTUP] Starting Flask server...\n")
-        else:
-            print("\n[STARTUP] ✗ Model loading failed!")
-    else:
-        print("\n[STARTUP] ✗ Weight download failed!")
-    
-    # Start server
+    print("\n[DIRECT EXECUTION] Starting Flask development server...")
+    sys.stdout.flush()
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
