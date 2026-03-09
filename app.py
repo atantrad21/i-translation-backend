@@ -19,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 print("=" * 70)
-print("🚀 I-TRANSLATION BACKEND v4.9.1 (FIXED DOWNLOADS)")
+print("🚀 I-TRANSLATION BACKEND v4.9.2 (LOAD COMPLETE MODELS)")
 print("=" * 70)
 
 class InstanceNormalization(layers.Layer):
@@ -37,43 +37,6 @@ class InstanceNormalization(layers.Layer):
         config = super(InstanceNormalization, self).get_config()
         config.update({"epsilon": self.epsilon})
         return config
-
-def downsample(filters, size, apply_norm=True):
-    initializer = tf.random_normal_initializer(0., 0.02)
-    result = keras.Sequential()
-    result.add(layers.Conv2D(filters, size, strides=2, padding='same', kernel_initializer=initializer, use_bias=False))
-    if apply_norm:
-        result.add(InstanceNormalization())
-    result.add(layers.LeakyReLU())
-    return result
-
-def upsample(filters, size, apply_dropout=False):
-    initializer = tf.random_normal_initializer(0., 0.02)
-    result = keras.Sequential()
-    result.add(layers.Conv2DTranspose(filters, size, strides=2, padding='same', kernel_initializer=initializer, use_bias=False))
-    result.add(InstanceNormalization())
-    if apply_dropout:
-        result.add(layers.Dropout(0.5))
-    result.add(layers.ReLU())
-    return result
-
-def unet_generator():
-    inputs = layers.Input(shape=[64, 64, 1])
-    down_stack = [downsample(128, 4, apply_norm=False), downsample(256, 4), downsample(256, 4), downsample(256, 4), downsample(256, 4), downsample(256, 4)]
-    up_stack = [upsample(256, 4, apply_dropout=True), upsample(256, 4, apply_dropout=True), upsample(256, 4, apply_dropout=True), upsample(256, 4), upsample(128, 4)]
-    initializer = tf.random_normal_initializer(0., 0.02)
-    last = layers.Conv2DTranspose(1, 4, strides=2, padding='same', kernel_initializer=initializer, activation='tanh')
-    x = inputs
-    skips = []
-    for down in down_stack:
-        x = down(x)
-        skips.append(x)
-    skips = reversed(skips[:-1])
-    for up, skip in zip(up_stack, skips):
-        x = up(x)
-        x = layers.Concatenate()([x, skip])
-    x = last(x)
-    return keras.Model(inputs=inputs, outputs=x)
 
 WEIGHT_FILES = {
     'F': '1O1hQSOoizPt5fJyVuEfxRpq0LibmaGeM',
@@ -93,33 +56,27 @@ def download_from_google_drive_fixed(file_id, output_path, max_retries=3):
         try:
             logger.info(f"📥 Attempt {attempt + 1}/{max_retries} - Downloading file_id: {file_id}")
             
-            # Try direct download first
             url = f'https://drive.google.com/uc?export=download&id={file_id}'
             session = requests.Session()
             
-            # Initial request
             response = session.get(url, stream=True, timeout=60)
             
-            # Check if we need confirmation token
             token = None
             for key, value in response.cookies.items():
                 if key.startswith('download_warning'):
                     token = value
                     break
             
-            # If token found, make confirmed request
             if token:
                 logger.info(f"   Using confirmation token: {token[:20]}...")
                 url = f'https://drive.google.com/uc?export=download&id={file_id}&confirm={token}'
                 response = session.get(url, stream=True, timeout=60)
             
-            # Check response status
             if response.status_code != 200:
                 logger.warning(f"   HTTP {response.status_code}, retrying...")
                 time.sleep(5)
                 continue
             
-            # Download file
             chunk_size = 32768
             total_size = 0
             logger.info(f"   Downloading to: {output_path}")
@@ -132,8 +89,7 @@ def download_from_google_drive_fixed(file_id, output_path, max_retries=3):
                         if total_size % (10 * 1024 * 1024) == 0:
                             logger.info(f"   Progress: {total_size / (1024*1024):.1f} MB")
             
-            # Verify download
-            if total_size < 1000000:  # Less than 1 MB
+            if total_size < 1000000:
                 logger.warning(f"   File too small ({total_size} bytes), likely HTML error page")
                 if os.path.exists(output_path):
                     with open(output_path, 'r', errors='ignore') as f:
@@ -177,10 +133,9 @@ def initialize_models_background():
             LOADING_PROGRESS = f"Downloading Generator {name}..."
             output_path = os.path.join(temp_dir, f'generator_{name.lower()}.h5')
             
-            # Check if already downloaded and valid
             if os.path.exists(output_path):
                 size_mb = os.path.getsize(output_path) / (1024 * 1024)
-                if size_mb > 10:  # At least 10 MB
+                if size_mb > 10:
                     logger.info(f"✅ Generator {name} cached: {size_mb:.2f} MB")
                     weight_paths[name] = output_path
                     continue
@@ -204,24 +159,33 @@ def initialize_models_background():
                 LOADING_PROGRESS = f"Failed: {error_msg}"
                 return False
         
-        LOADING_PROGRESS = "Building generators..."
+        LOADING_PROGRESS = "Loading models..."
         logger.info("\n" + "=" * 70)
-        logger.info("🏗️  BUILDING AND LOADING GENERATORS")
+        logger.info("🏗️  LOADING COMPLETE MODELS")
         logger.info("=" * 70)
         
         for name in ['F', 'G', 'I', 'J']:
-            LOADING_PROGRESS = f"Building Generator {name}..."
-            logger.info(f"\n🔨 Building Generator {name} architecture...")
-            generator = unet_generator()
-            logger.info(f"✅ Generator {name} architecture built")
+            LOADING_PROGRESS = f"Loading Generator {name}..."
+            logger.info(f"\n📂 Loading Generator {name} from: {weight_paths[name]}")
             
-            LOADING_PROGRESS = f"Loading weights for Generator {name}..."
-            logger.info(f"📂 Loading weights from: {weight_paths[name]}")
-            generator.load_weights(weight_paths[name])
-            logger.info(f"✅ Generator {name} weights loaded")
-            
-            MODELS[name] = generator
-            logger.info(f"✅ Generator {name} SUCCESS")
+            try:
+                # Load as complete model with custom objects
+                generator = keras.models.load_model(
+                    weight_paths[name],
+                    custom_objects={'InstanceNormalization': InstanceNormalization},
+                    compile=False
+                )
+                logger.info(f"✅ Generator {name} loaded as complete model")
+                logger.info(f"   Input shape: {generator.input_shape}")
+                logger.info(f"   Output shape: {generator.output_shape}")
+                logger.info(f"   Total params: {generator.count_params():,}")
+                
+                MODELS[name] = generator
+                logger.info(f"✅ Generator {name} SUCCESS")
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to load Generator {name}: {str(e)}")
+                raise
         
         MODELS_LOADED = True
         LOADING_PROGRESS = "Complete!"
@@ -286,7 +250,7 @@ def health():
             'I': 'I' in MODELS,
             'J': 'J' in MODELS
         },
-        'version': 'v4.9.1-fixed'
+        'version': 'v4.9.2-complete-models'
     })
 
 @app.route('/convert', methods=['POST'])
