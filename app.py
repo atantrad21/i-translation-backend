@@ -134,7 +134,7 @@ def initialize_models():
         MODELS_LOADED = False
         return False
 
-logger.info("STARTING I-TRANSLATION BACKEND v4.8.5")
+logger.info("STARTING I-TRANSLATION BACKEND v4.8.6")
 initialize_models()
 
 app = Flask(__name__)
@@ -151,11 +151,11 @@ def preprocess_image(image_bytes):
 
 def postprocess_image(tensor):
     img_data = tensor.numpy()
-    img_data = img_data<sup>0</sup>
+    img_data = np.squeeze(img_data, axis=0)
     img_data = (img_data + 1.0) * 127.5
     img_data = np.clip(img_data, 0, 255)
     img_data = img_data.astype(np.uint8)
-    img_data = img_data[:, :, 0]
+    img_data = np.squeeze(img_data, axis=-1)
     img = Image.fromarray(img_data, mode='L')
     img = img.resize((256, 256), Image.LANCZOS)
     output = io.BytesIO()
@@ -164,7 +164,7 @@ def postprocess_image(tensor):
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'online', 'models_loaded': MODELS_LOADED, 'generators': {'F': 'F' in MODELS, 'G': 'G' in MODELS, 'I': 'I' in MODELS, 'J': 'J' in MODELS}, 'version': 'v4.8.5'})
+    return jsonify({'status': 'online', 'models_loaded': MODELS_LOADED, 'generators': {'F': 'F' in MODELS, 'G': 'G' in MODELS, 'I': 'I' in MODELS, 'J': 'J' in MODELS}, 'version': 'v4.8.6'})
 
 @app.route('/convert', methods=['POST'])
 def convert():
