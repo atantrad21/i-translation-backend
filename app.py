@@ -1,3 +1,6 @@
+User Action Required
+
+📋 Here's the complete v4.8.8 LAZY LOADING code:
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import tensorflow as tf
@@ -10,6 +13,7 @@ import os
 import requests
 import logging
 import sys
+import threading
 
 # FORCE UNBUFFERED OUTPUT
 sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
@@ -23,9 +27,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# IMMEDIATE LOG TO VERIFY LOGGING WORKS
 print("=" * 70, flush=True)
-print("🚀 MODULE LOADING STARTED", flush=True)
+print("🚀 I-TRANSLATION BACKEND v4.8.8 (LAZY LOADING)", flush=True)
 print("=" * 70, flush=True)
 
 class InstanceNormalization(layers.Layer):
@@ -90,16 +93,18 @@ WEIGHT_FILES = {
 
 MODELS = {}
 MODELS_LOADED = False
+LOADING_IN_PROGRESS = False
+LOADING_LOCK = threading.Lock()
 
 def download_from_google_drive(file_id, output_path):
     print(f"📥 Starting download for file_id: {file_id}", flush=True)
     url = 'https://drive.google.com/uc?export=download&id=' + file_id
     session = requests.Session()
-    response = session.get(url, stream=True)
+    response = session.get(url, stream=True, timeout=60)
     for key, value in response.cookies.items():
         if key.startswith('download_warning'):
             url = url + '&confirm=' + value
-            response = session.get(url, stream=True)
+            response = session.get(url, stream=True, timeout=60)
             break
     chunk_size = 32768
     total_size = 0
@@ -108,17 +113,30 @@ def download_from_google_drive(file_id, output_path):
             if chunk:
                 f.write(chunk)
                 total_size += len(chunk)
-                if total_size % (1024 * 1024) == 0:  # Log every MB
+                if total_size % (5 * 1024 * 1024) == 0:  # Log every 5 MB
                     print(f"   Downloaded: {total_size / (1024*1024):.1f} MB", flush=True)
     print(f"✅ Download complete: {total_size / (1024*1024):.2f} MB", flush=True)
     return total_size > 0
 
 def initialize_models():
-    global MODELS, MODELS_LOADED
-    print("=" * 70, flush=True)
-    print("🔧 INITIALIZING MODELS AT STARTUP", flush=True)
-    print("=" * 70, flush=True)
+    global MODELS, MODELS_LOADED, LOADING_IN_PROGRESS
+    
+    with LOADING_LOCK:
+        if MODELS_LOADED:
+            print("✅ Models already loaded", flush=True)
+            return True
+        
+        if LOADING_IN_PROGRESS:
+            print("⏳ Loading already in progress...", flush=True)
+            return False
+        
+        LOADING_IN_PROGRESS = True
+    
     try:
+        print("=" * 70, flush=True)
+        print("🔧 INITIALIZING MODELS (LAZY LOADING)", flush=True)
+        print("=" * 70, flush=True)
+        
         print("📦 Creating temp directory for weights...", flush=True)
         temp_dir = '/tmp/weights'
         os.makedirs(temp_dir, exist_ok=True)
@@ -127,6 +145,14 @@ def initialize_models():
         weight_paths = {}
         for name, file_id in WEIGHT_FILES.items():
             output_path = os.path.join(temp_dir, 'generator_' + name.lower() + '.h5')
+            
+            # Skip if already downloaded
+            if os.path.exists(output_path):
+                size_mb = os.path.getsize(output_path) / (1024 * 1024)
+                print(f"✅ Generator {name} already exists: {size_mb:.2f} MB", flush=True)
+                weight_paths[name] = output_path
+                continue
+            
             print(f"\n📥 Downloading Generator {name}...", flush=True)
             print(f"   File ID: {file_id}", flush=True)
             print(f"   Output: {output_path}", flush=True)
@@ -139,6 +165,7 @@ def initialize_models():
                 weight_paths[name] = output_path
             else:
                 print(f"❌ Generator {name} download FAILED", flush=True)
+                LOADING_IN_PROGRESS = False
                 return False
         
         print("\n" + "=" * 70, flush=True)
@@ -158,6 +185,7 @@ def initialize_models():
             print(f"✅ Generator {name} SUCCESS", flush=True)
         
         MODELS_LOADED = True
+        LOADING_IN_PROGRESS = False
         print("\n" + "=" * 70, flush=True)
         print(f"🎉 ALL MODELS LOADED: {len(MODELS)}/4", flush=True)
         print("=" * 70, flush=True)
@@ -170,10 +198,10 @@ def initialize_models():
         import traceback
         traceback.print_exc()
         MODELS_LOADED = False
+        LOADING_IN_PROGRESS = False
         return False
 
-print("🚀 STARTING I-TRANSLATION BACKEND v4.8.7", flush=True)
-initialize_models()
+print("✅ Flask app initialization starting (models will load on first request)", flush=True)
 
 app = Flask(__name__)
 CORS(app)
@@ -202,12 +230,37 @@ def postprocess_image(tensor):
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'online', 'models_loaded': MODELS_LOADED, 'generators': {'F': 'F' in MODELS, 'G': 'G' in MODELS, 'I': 'I' in MODELS, 'J': 'J' in MODELS}, 'version': 'v4.8.7'})
+    return jsonify({
+        'status': 'online',
+        'models_loaded': MODELS_LOADED,
+        'loading_in_progress': LOADING_IN_PROGRESS,
+        'generators': {
+            'F': 'F' in MODELS,
+            'G': 'G' in MODELS,
+            'I': 'I' in MODELS,
+            'J': 'J' in MODELS
+        },
+        'version': 'v4.8.8-lazy'
+    })
 
 @app.route('/convert', methods=['POST'])
 def convert():
+    global MODELS_LOADED
+    
+    # Lazy load models on first request
+    if not MODELS_LOADED and not LOADING_IN_PROGRESS:
+        print("🔄 First request received - starting model initialization...", flush=True)
+        success = initialize_models()
+        if not success:
+            return jsonify({'error': 'Model initialization failed', 'retry': True}), 503
+    
+    # Wait if loading in progress
+    if LOADING_IN_PROGRESS:
+        return jsonify({'error': 'Models are loading, please wait...', 'retry': True}), 503
+    
     if not MODELS_LOADED:
-        return jsonify({'error': 'Models not loaded yet'}), 503
+        return jsonify({'error': 'Models not loaded yet', 'retry': True}), 503
+    
     try:
         if 'image' not in request.files:
             return jsonify({'error': 'No image provided'}), 400
@@ -224,7 +277,8 @@ def convert():
         logger.error('Conversion error: ' + str(e))
         return jsonify({'error': str(e)}), 500
 
-print("✅ Flask app created and routes registered", flush=True)
+print("✅ Flask app created - ready to accept requests", flush=True)
+print("📌 Models will load on first /convert request", flush=True)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
