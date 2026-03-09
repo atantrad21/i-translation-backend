@@ -154,10 +154,11 @@ def preprocess_image(image_bytes):
     return np.expand_dims(np.expand_dims(img_array, axis=-1), axis=0)
 
 def postprocess_image(tensor):
-    img_data = tensor<sup>0</sup>
-    img_data = (img_data + 1.0) * 127.5
-    img_data = np.clip(img_data, 0, 255).astype(np.uint8)
-    img = Image.fromarray(img_data[:, :, 0], mode='L')
+    first_elem = tensor[0]
+    scaled = (first_elem + 1.0) * 127.5
+    clipped = np.clip(scaled, 0, 255).astype(np.uint8)
+    grayscale = clipped[:, :, 0]
+    img = Image.fromarray(grayscale, mode='L')
     img = img.resize((256, 256), Image.LANCZOS)
     output = io.BytesIO()
     img.save(output, format='PNG')
