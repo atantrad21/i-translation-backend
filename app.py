@@ -272,7 +272,7 @@ def preprocess_image(image_bytes):
 
 def postprocess_image(output_tensor, upscale_to=256):
     """Convert output tensor to image bytes (upscaled for display)"""
-    output_array = output_tensor.numpy()[0]
+    output_array = output_tensor.numpy()<sup>0</sup>
     output_array = ((output_array + 1.0) * 127.5).astype(np.uint8)
     output_array = output_array[:, :, 0]
     
