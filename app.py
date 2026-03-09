@@ -10,6 +10,7 @@ import os
 import requests
 import logging
 import threading
+import time
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 print("=" * 70)
-print("🚀 I-TRANSLATION BACKEND v4.8.9 (LAZY LOADING - FIXED)")
+print("🚀 I-TRANSLATION BACKEND v4.9.1 (FIXED DOWNLOADS)")
 print("=" * 70)
 
 class InstanceNormalization(layers.Layer):
@@ -83,89 +84,138 @@ WEIGHT_FILES = {
 
 MODELS = {}
 MODELS_LOADED = False
-LOADING_IN_PROGRESS = False
-LOADING_LOCK = threading.Lock()
+LOADING_ERROR = None
+LOADING_PROGRESS = "Starting..."
 
-def download_from_google_drive(file_id, output_path):
-    logger.info(f"📥 Starting download for file_id: {file_id}")
-    url = 'https://drive.google.com/uc?export=download&id=' + file_id
-    session = requests.Session()
-    response = session.get(url, stream=True, timeout=120)
-    for key, value in response.cookies.items():
-        if key.startswith('download_warning'):
-            url = url + '&confirm=' + value
-            response = session.get(url, stream=True, timeout=120)
-            break
-    chunk_size = 32768
-    total_size = 0
-    with open(output_path, 'wb') as f:
-        for chunk in response.iter_content(chunk_size):
-            if chunk:
-                f.write(chunk)
-                total_size += len(chunk)
-                if total_size % (10 * 1024 * 1024) == 0:
-                    logger.info(f"   Downloaded: {total_size / (1024*1024):.1f} MB")
-    logger.info(f"✅ Download complete: {total_size / (1024*1024):.2f} MB")
-    return total_size > 0
-
-def initialize_models():
-    global MODELS, MODELS_LOADED, LOADING_IN_PROGRESS
-    
-    with LOADING_LOCK:
-        if MODELS_LOADED:
-            logger.info("✅ Models already loaded")
+def download_from_google_drive_fixed(file_id, output_path, max_retries=3):
+    """Download from Google Drive with proper error handling and retries."""
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"📥 Attempt {attempt + 1}/{max_retries} - Downloading file_id: {file_id}")
+            
+            # Try direct download first
+            url = f'https://drive.google.com/uc?export=download&id={file_id}'
+            session = requests.Session()
+            
+            # Initial request
+            response = session.get(url, stream=True, timeout=60)
+            
+            # Check if we need confirmation token
+            token = None
+            for key, value in response.cookies.items():
+                if key.startswith('download_warning'):
+                    token = value
+                    break
+            
+            # If token found, make confirmed request
+            if token:
+                logger.info(f"   Using confirmation token: {token[:20]}...")
+                url = f'https://drive.google.com/uc?export=download&id={file_id}&confirm={token}'
+                response = session.get(url, stream=True, timeout=60)
+            
+            # Check response status
+            if response.status_code != 200:
+                logger.warning(f"   HTTP {response.status_code}, retrying...")
+                time.sleep(5)
+                continue
+            
+            # Download file
+            chunk_size = 32768
+            total_size = 0
+            logger.info(f"   Downloading to: {output_path}")
+            
+            with open(output_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size):
+                    if chunk:
+                        f.write(chunk)
+                        total_size += len(chunk)
+                        if total_size % (10 * 1024 * 1024) == 0:
+                            logger.info(f"   Progress: {total_size / (1024*1024):.1f} MB")
+            
+            # Verify download
+            if total_size < 1000000:  # Less than 1 MB
+                logger.warning(f"   File too small ({total_size} bytes), likely HTML error page")
+                if os.path.exists(output_path):
+                    with open(output_path, 'r', errors='ignore') as f:
+                        content_preview = f.read(500)
+                        if '<html' in content_preview.lower():
+                            logger.error(f"   Downloaded HTML instead of model file!")
+                time.sleep(5)
+                continue
+            
+            logger.info(f"✅ Download complete: {total_size / (1024*1024):.2f} MB")
             return True
+            
+        except requests.exceptions.Timeout:
+            logger.error(f"❌ Attempt {attempt + 1} timeout after 60 seconds")
+        except Exception as e:
+            logger.error(f"❌ Attempt {attempt + 1} failed: {str(e)}")
         
-        if LOADING_IN_PROGRESS:
-            logger.info("⏳ Loading already in progress...")
-            return False
-        
-        LOADING_IN_PROGRESS = True
+        if attempt < max_retries - 1:
+            wait_time = 10 * (attempt + 1)
+            logger.info(f"   Waiting {wait_time} seconds before retry...")
+            time.sleep(wait_time)
+    
+    logger.error(f"❌ All {max_retries} download attempts failed for file_id: {file_id}")
+    return False
+
+def initialize_models_background():
+    global MODELS, MODELS_LOADED, LOADING_ERROR, LOADING_PROGRESS
     
     try:
+        LOADING_PROGRESS = "Creating temp directory..."
         logger.info("=" * 70)
-        logger.info("🔧 INITIALIZING MODELS (LAZY LOADING)")
+        logger.info("🔧 INITIALIZING MODELS (BACKGROUND THREAD)")
         logger.info("=" * 70)
         
-        logger.info("📦 Creating temp directory for weights...")
         temp_dir = '/tmp/weights'
         os.makedirs(temp_dir, exist_ok=True)
         logger.info(f"✅ Temp directory created: {temp_dir}")
         
         weight_paths = {}
         for name, file_id in WEIGHT_FILES.items():
-            output_path = os.path.join(temp_dir, 'generator_' + name.lower() + '.h5')
+            LOADING_PROGRESS = f"Downloading Generator {name}..."
+            output_path = os.path.join(temp_dir, f'generator_{name.lower()}.h5')
             
+            # Check if already downloaded and valid
             if os.path.exists(output_path):
                 size_mb = os.path.getsize(output_path) / (1024 * 1024)
-                logger.info(f"✅ Generator {name} already exists: {size_mb:.2f} MB")
-                weight_paths[name] = output_path
-                continue
+                if size_mb > 10:  # At least 10 MB
+                    logger.info(f"✅ Generator {name} cached: {size_mb:.2f} MB")
+                    weight_paths[name] = output_path
+                    continue
+                else:
+                    logger.warning(f"⚠️  Cached file too small ({size_mb:.2f} MB), re-downloading...")
+                    os.remove(output_path)
             
-            logger.info(f"📥 Downloading Generator {name}...")
+            logger.info(f"\n📥 Downloading Generator {name}...")
             logger.info(f"   File ID: {file_id}")
-            logger.info(f"   Output: {output_path}")
             
-            success = download_from_google_drive(file_id, output_path)
+            success = download_from_google_drive_fixed(file_id, output_path)
             
             if success and os.path.exists(output_path):
                 size_mb = os.path.getsize(output_path) / (1024 * 1024)
                 logger.info(f"✅ Generator {name} downloaded: {size_mb:.2f} MB")
                 weight_paths[name] = output_path
             else:
-                logger.error(f"❌ Generator {name} download FAILED")
-                LOADING_IN_PROGRESS = False
+                error_msg = f"Generator {name} download failed after all retries"
+                logger.error(f"❌ {error_msg}")
+                LOADING_ERROR = error_msg
+                LOADING_PROGRESS = f"Failed: {error_msg}"
                 return False
         
-        logger.info("=" * 70)
+        LOADING_PROGRESS = "Building generators..."
+        logger.info("\n" + "=" * 70)
         logger.info("🏗️  BUILDING AND LOADING GENERATORS")
         logger.info("=" * 70)
         
         for name in ['F', 'G', 'I', 'J']:
-            logger.info(f"🔨 Building Generator {name} architecture...")
+            LOADING_PROGRESS = f"Building Generator {name}..."
+            logger.info(f"\n🔨 Building Generator {name} architecture...")
             generator = unet_generator()
             logger.info(f"✅ Generator {name} architecture built")
             
+            LOADING_PROGRESS = f"Loading weights for Generator {name}..."
             logger.info(f"📂 Loading weights from: {weight_paths[name]}")
             generator.load_weights(weight_paths[name])
             logger.info(f"✅ Generator {name} weights loaded")
@@ -174,23 +224,29 @@ def initialize_models():
             logger.info(f"✅ Generator {name} SUCCESS")
         
         MODELS_LOADED = True
-        LOADING_IN_PROGRESS = False
-        logger.info("=" * 70)
+        LOADING_PROGRESS = "Complete!"
+        logger.info("\n" + "=" * 70)
         logger.info(f"🎉 ALL MODELS LOADED: {len(MODELS)}/4")
         logger.info("=" * 70)
         return True
+        
     except Exception as e:
-        logger.error("=" * 70)
-        logger.error(f"❌ INITIALIZATION FAILED")
-        logger.error(f"❌ Error: {str(e)}")
+        error_msg = f"Initialization failed: {str(e)}"
+        logger.error("\n" + "=" * 70)
+        logger.error(f"❌ {error_msg}")
         logger.error("=" * 70)
         import traceback
         traceback.print_exc()
+        LOADING_ERROR = error_msg
+        LOADING_PROGRESS = f"Failed: {error_msg}"
         MODELS_LOADED = False
-        LOADING_IN_PROGRESS = False
         return False
 
-logger.info("✅ Flask app initialization starting (models will load on first request)")
+# Start background loading immediately
+logger.info("🔄 Starting background model loading thread...")
+loading_thread = threading.Thread(target=initialize_models_background, daemon=True)
+loading_thread.start()
+logger.info("✅ Background thread started")
 
 app = Flask(__name__)
 CORS(app)
@@ -222,31 +278,28 @@ def health():
     return jsonify({
         'status': 'online',
         'models_loaded': MODELS_LOADED,
-        'loading_in_progress': LOADING_IN_PROGRESS,
+        'loading_progress': LOADING_PROGRESS,
+        'loading_error': LOADING_ERROR,
         'generators': {
             'F': 'F' in MODELS,
             'G': 'G' in MODELS,
             'I': 'I' in MODELS,
             'J': 'J' in MODELS
         },
-        'version': 'v4.8.9-lazy'
+        'version': 'v4.9.1-fixed'
     })
 
 @app.route('/convert', methods=['POST'])
 def convert():
-    global MODELS_LOADED
-    
-    if not MODELS_LOADED and not LOADING_IN_PROGRESS:
-        logger.info("🔄 First request received - starting model initialization...")
-        success = initialize_models()
-        if not success:
-            return jsonify({'error': 'Model initialization failed', 'retry': True}), 503
-    
-    if LOADING_IN_PROGRESS:
-        return jsonify({'error': 'Models are loading, please wait...', 'retry': True}), 503
+    if LOADING_ERROR:
+        return jsonify({'error': f'Model loading failed: {LOADING_ERROR}', 'retry': False}), 500
     
     if not MODELS_LOADED:
-        return jsonify({'error': 'Models not loaded yet', 'retry': True}), 503
+        return jsonify({
+            'error': 'Models are still loading, please wait...',
+            'progress': LOADING_PROGRESS,
+            'retry': True
+        }), 503
     
     try:
         if 'image' not in request.files:
@@ -261,11 +314,10 @@ def convert():
             results[name] = output_bytes.hex()
         return jsonify({'success': True, 'outputs': results})
     except Exception as e:
-        logger.error('Conversion error: ' + str(e))
+        logger.error(f'Conversion error: {str(e)}')
         return jsonify({'error': str(e)}), 500
 
-logger.info("✅ Flask app created - ready to accept requests")
-logger.info("📌 Models will load on first /convert request")
+logger.info("✅ Flask app created - models loading in background")
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
