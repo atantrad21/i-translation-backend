@@ -19,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 print("=" * 70)
-print("🚀 I-TRANSLATION BACKEND v4.9.2 (LOAD COMPLETE MODELS)")
+print("🚀 I-TRANSLATION BACKEND v4.9.3 (BUILD + LOAD WEIGHTS)")
 print("=" * 70)
 
 class InstanceNormalization(layers.Layer):
@@ -37,6 +37,56 @@ class InstanceNormalization(layers.Layer):
         config = super(InstanceNormalization, self).get_config()
         config.update({"epsilon": self.epsilon})
         return config
+
+def downsample(filters, size, apply_norm=True):
+    initializer = tf.random_normal_initializer(0., 0.02)
+    result = keras.Sequential()
+    result.add(layers.Conv2D(filters, size, strides=2, padding='same', kernel_initializer=initializer, use_bias=False))
+    if apply_norm:
+        result.add(InstanceNormalization())
+    result.add(layers.LeakyReLU())
+    return result
+
+def upsample(filters, size, apply_dropout=False):
+    initializer = tf.random_normal_initializer(0., 0.02)
+    result = keras.Sequential()
+    result.add(layers.Conv2DTranspose(filters, size, strides=2, padding='same', kernel_initializer=initializer, use_bias=False))
+    result.add(InstanceNormalization())
+    if apply_dropout:
+        result.add(layers.Dropout(0.5))
+    result.add(layers.ReLU())
+    return result
+
+def unet_generator():
+    inputs = layers.Input(shape=[64, 64, 1])
+    down_stack = [
+        downsample(128, 4, apply_norm=False),
+        downsample(256, 4),
+        downsample(256, 4),
+        downsample(256, 4),
+        downsample(256, 4),
+        downsample(256, 4)
+    ]
+    up_stack = [
+        upsample(256, 4, apply_dropout=True),
+        upsample(256, 4, apply_dropout=True),
+        upsample(256, 4, apply_dropout=True),
+        upsample(256, 4),
+        upsample(128, 4)
+    ]
+    initializer = tf.random_normal_initializer(0., 0.02)
+    last = layers.Conv2DTranspose(1, 4, strides=2, padding='same', kernel_initializer=initializer, activation='tanh')
+    x = inputs
+    skips = []
+    for down in down_stack:
+        x = down(x)
+        skips.append(x)
+    skips = reversed(skips[:-1])
+    for up, skip in zip(up_stack, skips):
+        x = up(x)
+        x = layers.Concatenate()([x, skip])
+    x = last(x)
+    return keras.Model(inputs=inputs, outputs=x)
 
 WEIGHT_FILES = {
     'F': '1O1hQSOoizPt5fJyVuEfxRpq0LibmaGeM',
@@ -159,32 +209,34 @@ def initialize_models_background():
                 LOADING_PROGRESS = f"Failed: {error_msg}"
                 return False
         
-        LOADING_PROGRESS = "Loading models..."
+        LOADING_PROGRESS = "Building and loading generators..."
         logger.info("\n" + "=" * 70)
-        logger.info("🏗️  LOADING COMPLETE MODELS")
+        logger.info("🏗️  BUILDING ARCHITECTURES AND LOADING WEIGHTS")
         logger.info("=" * 70)
         
         for name in ['F', 'G', 'I', 'J']:
-            LOADING_PROGRESS = f"Loading Generator {name}..."
-            logger.info(f"\n📂 Loading Generator {name} from: {weight_paths[name]}")
+            LOADING_PROGRESS = f"Building Generator {name}..."
+            logger.info(f"\n🔨 Building Generator {name} architecture...")
+            generator = unet_generator()
+            
+            dummy_input = tf.random.normal([1, 64, 64, 1])
+            _ = generator(dummy_input, training=False)
+            logger.info(f"✅ Generator {name} architecture built")
+            logger.info(f"   Total layers: {len(generator.layers)}")
+            logger.info(f"   Total params: {generator.count_params():,}")
+            
+            LOADING_PROGRESS = f"Loading weights for Generator {name}..."
+            logger.info(f"📂 Loading weights from: {weight_paths[name]}")
             
             try:
-                # Load as complete model with custom objects
-                generator = keras.models.load_model(
-                    weight_paths[name],
-                    custom_objects={'InstanceNormalization': InstanceNormalization},
-                    compile=False
-                )
-                logger.info(f"✅ Generator {name} loaded as complete model")
-                logger.info(f"   Input shape: {generator.input_shape}")
-                logger.info(f"   Output shape: {generator.output_shape}")
-                logger.info(f"   Total params: {generator.count_params():,}")
+                generator.load_weights(weight_paths[name])
+                logger.info(f"✅ Generator {name} weights loaded successfully")
                 
                 MODELS[name] = generator
-                logger.info(f"✅ Generator {name} SUCCESS")
+                logger.info(f"✅ Generator {name} COMPLETE")
                 
             except Exception as e:
-                logger.error(f"❌ Failed to load Generator {name}: {str(e)}")
+                logger.error(f"❌ Failed to load weights for Generator {name}: {str(e)}")
                 raise
         
         MODELS_LOADED = True
@@ -206,7 +258,6 @@ def initialize_models_background():
         MODELS_LOADED = False
         return False
 
-# Start background loading immediately
 logger.info("🔄 Starting background model loading thread...")
 loading_thread = threading.Thread(target=initialize_models_background, daemon=True)
 loading_thread.start()
@@ -250,7 +301,7 @@ def health():
             'I': 'I' in MODELS,
             'J': 'J' in MODELS
         },
-        'version': 'v4.9.2-complete-models'
+        'version': 'v4.9.3-build-then-load'
     })
 
 @app.route('/convert', methods=['POST'])
