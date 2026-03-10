@@ -119,11 +119,11 @@ def unet_generator():
     return keras.Model(inputs=inputs, outputs=x)
 
 # CHECKPOINT 652 FILE IDs (USER-PROVIDED)
-FILE_IDS = {
-    'F': '1bzuQ1AFKC5b0WDrSW_lUpIomquQkSCOt',
-    'G': '1vE3wlV7P2_J-Ndr62yj0tsytq6gv8-SF',
-    'I': '12iq54-pX3lWZnSjLFWLaOt2LV_3CTgeV',
-    'J': '1Reo76L5CCybAplmj_pPNWZCWFLK6n8Zp',
+FILE_IDS ={
+    'F': '1NTBlkD3MQPfjoAN2rRoySoaCNqsTkELZ',  # Checkpoint 652 - CORRECT
+    'G': '15YPfERDoVbTWHPzzAn54OKpRVpvFOyRe',  # Checkpoint 652 - CORRECT
+    'I': '1K2DTtrsYpeB4XILn8eZAU4G6a3lty065',  # Checkpoint 652 - CORRECT
+    'J': '1Reo76L5CCybAplmj_pPNWZCWFLK6n8Zp',  # Checkpoint 652 - CORRECT
 }
 
 MODELS = {}
