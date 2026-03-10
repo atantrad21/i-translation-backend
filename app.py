@@ -208,6 +208,7 @@ def preprocess_image(image_bytes):
     return np.expand_dims(img_array, axis=0)
 
 def postprocess_image(tensor):
+    """Convert tensor to PIL Image"""
     img_data = tensor.numpy()
     img_data = np.squeeze(img_data, axis=0)
     img_data = (img_data + 1.0) * 127.5
@@ -215,27 +216,11 @@ def postprocess_image(tensor):
     img_data = img_data.astype(np.uint8)
     img_data = np.squeeze(img_data, axis=-1)
     img = Image.fromarray(img_data, mode='L')
-    img = img.resize((256, 256), Image.LANCZOS)
+    # FIXED: Keep native 64×64 output (matches Colab training size)
+    # REMOVED: img = img.resize((256, 256), Image.LANCZOS)  # This was causing noise!
     output = io.BytesIO()
     img.save(output, format='PNG')
     return output.getvalue()
-
-@app.route('/health', methods=['GET'])
-def health():
-    return jsonify({
-        'status': 'online',
-        'models_loaded': MODELS_LOADED,
-        'loading_progress': LOADING_PROGRESS,
-        'loading_error': LOADING_ERROR,
-        'generators': {
-            'F': 'F' in MODELS,
-            'G': 'G' in MODELS,
-            'I': 'I' in MODELS,
-            'J': 'J' in MODELS
-        },
-        'checkpoint': '652',
-        'version': 'v6.0-checkpoint-652'
-    })
 
 @app.route('/convert', methods=['POST'])
 def convert():
