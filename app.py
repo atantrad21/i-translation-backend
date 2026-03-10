@@ -209,18 +209,30 @@ def preprocess_image(image_bytes):
 
 def postprocess_image(tensor):
     """Convert tensor to PIL Image"""
-    img_data = tensor.numpy()
-    img_data = np.squeeze(img_data, axis=0)
-    img_data = (img_data + 1.0) * 127.5
-    img_data = np.clip(img_data, 0, 255)
-    img_data = img_data.astype(np.uint8)
-    img_data = np.squeeze(img_data, axis=-1)
-    img = Image.fromarray(img_data, mode='L')
-    # FIXED: Keep native 64×64 output (matches Colab training size)
-    # REMOVED: img = img.resize((256, 256), Image.LANCZOS)  # This was causing noise!
-    output = io.BytesIO()
-    img.save(output, format='PNG')
-    return output.getvalue()
+    img_array = np.squeeze(tensor)
+    img_array = (img_array + 1) * 127.5
+    img_array = np.clip(img_array, 0, 255).astype(np.uint8)
+    img = Image.fromarray(img_array, mode='L')
+    # FIXED: Keep native 64x64 output (matches Colab training size)
+    # Removed: img = img.resize((256, 256), Image.LANCZOS)  # This was causing noise!
+    return img
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({
+        'status': 'online',
+        'models_loaded': MODELS_LOADED,
+        'loading_progress': LOADING_PROGRESS,
+        'loading_error': LOADING_ERROR,
+        'generators': {
+            'F': 'F' in MODELS,
+            'G': 'G' in MODELS,
+            'I': 'I' in MODELS,
+            'J': 'J' in MODELS
+        },
+        'checkpoint': '652',
+        'version': 'v6.0-checkpoint-652'
+    })
 
 @app.route('/convert', methods=['POST'])
 def convert():
