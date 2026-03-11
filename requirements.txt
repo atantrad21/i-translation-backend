@@ -1,8 +1,8 @@
-tensorflow==2.18.0
-flask==3.0.0
+flask==2.3.0
+tensorflow==2.4.0
+requests==2.31.0
+gunicorn==20.1.0
+h5py==2.10.0
 flask-cors==4.0.0
-pillow==10.4.0
-numpy==1.26.4
-requests==2.32.3
-gdown
-gunicorn==21.2.0
+pillow==9.5.0
+numpy==1.19.5
