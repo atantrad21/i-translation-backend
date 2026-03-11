@@ -1,4 +1,3 @@
-!pip install flask-cors
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import numpy as np
@@ -6,7 +5,7 @@ from PIL import Image
 import os
 import io
 import requests
-import base64 # Re-added import for base64
+import base64
 
 print("[INFO] Applying TensorFlow 2.4 compatibility patch...")
 
@@ -27,7 +26,7 @@ def patched_input_init(self, input_shape=None, batch_size=None, dtype=None,
         if input_shape is None and batch_shape is not None:
             input_shape = batch_shape[1:]
             if batch_size is None:
-                batch_size = batch_shape[0] # Corrected from batch_shape^0
+                batch_size = batch_shape[0]
 
     return original_input_init(self, input_shape=input_shape, batch_size=batch_size,
                               dtype=dtype, input_tensor=input_tensor, sparse=sparse,
