@@ -1,10 +1,4 @@
-"""
-I-Translation Medical Image Converter - Backend API
-Version: v11.0 - Working Colab Code (Deployment Ready)
-Checkpoint: 652
-TensorFlow: 2.4.0 with compatibility patch
-"""
-
+!pip install flask-cors
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import numpy as np
@@ -12,7 +6,7 @@ from PIL import Image
 import os
 import io
 import requests
-import base64
+import base64 # Re-added import for base64
 
 print("[INFO] Applying TensorFlow 2.4 compatibility patch...")
 
@@ -24,14 +18,8 @@ original_input_init = InputLayer.__init__
 
 def patched_input_init(self, input_shape=None, batch_size=None, dtype=None,
                 input_tensor=None, sparse=False, name=None, ragged=False,
-                **kwargs):
-    
-    # NEW: Remove type_spec if present (not supported in TF 2.4)
-    if 'type_spec' in kwargs:
-        type_spec = kwargs.pop('type_spec')
-        print(f"[PATCH] Removed type_spec: {type_spec}")
+                type_spec=None, **kwargs):
 
-    # EXISTING: Handle batch_shape parameter
     if 'batch_shape' in kwargs:
         batch_shape = kwargs.pop('batch_shape')
         print(f"[PATCH] Removed batch_shape: {batch_shape}")
@@ -39,11 +27,12 @@ def patched_input_init(self, input_shape=None, batch_size=None, dtype=None,
         if input_shape is None and batch_shape is not None:
             input_shape = batch_shape[1:]
             if batch_size is None:
-                batch_size = batch_shape<sup>0</sup>
+                batch_size = batch_shape[0] # Corrected from batch_shape^0
 
     return original_input_init(self, input_shape=input_shape, batch_size=batch_size,
                               dtype=dtype, input_tensor=input_tensor, sparse=sparse,
-                              name=name, ragged=ragged, **kwargs)
+                              name=name, ragged=ragged, type_spec=type_spec, **kwargs)
+
 InputLayer.__init__ = patched_input_init
 print("[INFO] Patch applied successfully!")
 
@@ -140,7 +129,7 @@ def load_models():
     if len(generators) == 4:
         print("🎉 ALL 4 CHECKPOINT 652 GENERATORS LOADED!")
     else:
-        print(f"⚠️  Only {len(generators)}/4 generators loaded")
+        print(f"Only {len(generators)}/4 generators loaded")
     print("="*70 + "\n")
     
     return generators
@@ -176,7 +165,7 @@ def health():
         'generators': list(generators.keys()),
         'checkpoint': '652',
         'tensorflow_version': tf.__version__,
-        'version': 'v11.0-working-colab'
+        'version': 'v10.0-tf24-patched'
     })
 
 @app.route('/convert', methods=['POST'])
@@ -214,6 +203,4 @@ def convert_image():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    # Get port from environment variable (Railway/Render) or default to 7860 (Colab/HF)
-    port = int(os.environ.get('PORT', 7860))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=7860)
