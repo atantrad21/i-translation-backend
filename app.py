@@ -24,8 +24,14 @@ original_input_init = InputLayer.__init__
 
 def patched_input_init(self, input_shape=None, batch_size=None, dtype=None,
                 input_tensor=None, sparse=False, name=None, ragged=False,
-                type_spec=None, **kwargs):
+                **kwargs):
+    
+    # NEW: Remove type_spec if present (not supported in TF 2.4)
+    if 'type_spec' in kwargs:
+        type_spec = kwargs.pop('type_spec')
+        print(f"[PATCH] Removed type_spec: {type_spec}")
 
+    # EXISTING: Handle batch_shape parameter
     if 'batch_shape' in kwargs:
         batch_shape = kwargs.pop('batch_shape')
         print(f"[PATCH] Removed batch_shape: {batch_shape}")
@@ -33,12 +39,11 @@ def patched_input_init(self, input_shape=None, batch_size=None, dtype=None,
         if input_shape is None and batch_shape is not None:
             input_shape = batch_shape[1:]
             if batch_size is None:
-                batch_size = batch_shape[0]
+                batch_size = batch_shape<sup>0</sup>
 
     return original_input_init(self, input_shape=input_shape, batch_size=batch_size,
                               dtype=dtype, input_tensor=input_tensor, sparse=sparse,
-                              name=name, ragged=ragged, type_spec=type_spec, **kwargs)
-
+                              name=name, ragged=ragged, **kwargs)
 InputLayer.__init__ = patched_input_init
 print("[INFO] Patch applied successfully!")
 
