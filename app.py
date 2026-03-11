@@ -1,3 +1,10 @@
+"""
+I-Translation Medical Image Converter - Backend API
+Version: v11.1 - Fixed type_spec compatibility
+Checkpoint: 652
+TensorFlow: 2.4.0 with complete compatibility patch
+"""
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import numpy as np
@@ -12,13 +19,19 @@ print("[INFO] Applying TensorFlow 2.4 compatibility patch...")
 import tensorflow as tf
 from tensorflow.python.keras.engine.input_layer import InputLayer
 
-# Patch InputLayer to handle batch_shape parameter
+# Patch InputLayer to handle batch_shape and type_spec parameters
 original_input_init = InputLayer.__init__
 
 def patched_input_init(self, input_shape=None, batch_size=None, dtype=None,
                 input_tensor=None, sparse=False, name=None, ragged=False,
-                type_spec=None, **kwargs):
+                **kwargs):
+    
+    # Remove type_spec if present (not supported in TF 2.4)
+    if 'type_spec' in kwargs:
+        type_spec = kwargs.pop('type_spec')
+        print(f"[PATCH] Removed type_spec: {type_spec}")
 
+    # Handle batch_shape parameter
     if 'batch_shape' in kwargs:
         batch_shape = kwargs.pop('batch_shape')
         print(f"[PATCH] Removed batch_shape: {batch_shape}")
@@ -30,7 +43,7 @@ def patched_input_init(self, input_shape=None, batch_size=None, dtype=None,
 
     return original_input_init(self, input_shape=input_shape, batch_size=batch_size,
                               dtype=dtype, input_tensor=input_tensor, sparse=sparse,
-                              name=name, ragged=ragged, type_spec=type_spec, **kwargs)
+                              name=name, ragged=ragged, **kwargs)
 
 InputLayer.__init__ = patched_input_init
 print("[INFO] Patch applied successfully!")
@@ -128,7 +141,7 @@ def load_models():
     if len(generators) == 4:
         print("🎉 ALL 4 CHECKPOINT 652 GENERATORS LOADED!")
     else:
-        print(f"Only {len(generators)}/4 generators loaded")
+        print(f"⚠️  Only {len(generators)}/4 generators loaded")
     print("="*70 + "\n")
     
     return generators
@@ -164,7 +177,7 @@ def health():
         'generators': list(generators.keys()),
         'checkpoint': '652',
         'tensorflow_version': tf.__version__,
-        'version': 'v10.0-tf24-patched'
+        'version': 'v11.1-type-spec-fix'
     })
 
 @app.route('/convert', methods=['POST'])
@@ -172,34 +185,56 @@ def convert_image():
     if len(generators) != 4:
         return jsonify({'error': 'Models not loaded yet, please wait'}), 503
     
-    if 'image' not in request.files:
-        return jsonify({'error': 'No image provided'}), 400
+    conversion_type = request.form.get('type', 'ct_to_mri')
     
-    try:
-        image_file = request.files['image']
-        image_bytes = image_file.read()
-        input_tensor = preprocess_image(image_bytes)
-        
-        results = {}
-        for name, model in generators.items():
-            prediction = model(input_tensor, training=False)
-            output_img = postprocess_image(prediction.numpy())
+    results = {}
+    
+    for i in range(1, 5):
+        image_key = f'image{i}'
+        if image_key not in request.files:
+            continue
             
-            img_byte_arr = io.BytesIO()
-            output_img.save(img_byte_arr, format='PNG')
-            img_byte_arr.seek(0)
+        try:
+            image_file = request.files[image_key]
+            image_bytes = image_file.read()
+            input_tensor = preprocess_image(image_bytes)
             
-            img_base64 = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
-            results[name] = f"data:image/png;base64,{img_base64}"
-        
-        return jsonify({
-            'success': True,
-            'results': results,
-            'checkpoint': '652'
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+            # Select generators based on conversion type
+            if conversion_type == 'ct_to_mri':
+                # CT to MRI: Use generators G and I
+                gen_outputs = {}
+                if 'G' in generators:
+                    gen_outputs['G'] = generators['G'](input_tensor, training=False)
+                if 'I' in generators:
+                    gen_outputs['I'] = generators['I'](input_tensor, training=False)
+            else:  # mri_to_ct
+                # MRI to CT: Use generators F and J
+                gen_outputs = {}
+                if 'F' in generators:
+                    gen_outputs['F'] = generators['F'](input_tensor, training=False)
+                if 'J' in generators:
+                    gen_outputs['J'] = generators['J'](input_tensor, training=False)
+            
+            # Convert all generator outputs to images
+            for gen_name, prediction in gen_outputs.items():
+                output_img = postprocess_image(prediction.numpy())
+                
+                img_byte_arr = io.BytesIO()
+                output_img.save(img_byte_arr, format='PNG')
+                img_byte_arr.seek(0)
+                
+                img_base64 = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
+                results[f'{image_key}_{gen_name}'] = img_base64
+            
+        except Exception as e:
+            print(f"[ERROR] Processing {image_key}: {str(e)}")
+            results[f'{image_key}_error'] = str(e)
+    
+    if not results:
+        return jsonify({'error': 'No valid images provided'}), 400
+    
+    return jsonify(results)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=7860)
+    port = int(os.environ.get('PORT', 7860))
+    app.run(host='0.0.0.0', port=port)
