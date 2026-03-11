@@ -1,8 +1,8 @@
 """
 I-Translation Medical Image Converter - Backend API
-Version: v11.1 - Fixed type_spec compatibility
+Version: v11.2 - Universal Keras compatibility patch
 Checkpoint: 652
-TensorFlow: 2.4.0 with complete compatibility patch
+Works with TensorFlow 2.4+ and Python 3.8-3.9
 """
 
 from flask import Flask, request, jsonify
@@ -14,43 +14,97 @@ import io
 import requests
 import base64
 
-print("[INFO] Applying TensorFlow 2.4 compatibility patch...")
+print("[INFO] Applying Universal Keras compatibility patch...")
+print(f"[INFO] Python version: {os.sys.version}")
 
 import tensorflow as tf
-from tensorflow.python.keras.engine.input_layer import InputLayer
+print(f"[INFO] TensorFlow version: {tf.__version__}")
+
+# Universal patch that works with both old and new Keras
+try:
+    # Try new Keras (TF 2.16+)
+    from keras.engine.input_layer import InputLayer
+    print("[INFO] Using standalone Keras")
+except ImportError:
+    try:
+        # Try TF integrated Keras (TF 2.4-2.15)
+        from tensorflow.python.keras.engine.input_layer import InputLayer
+        print("[INFO] Using TensorFlow integrated Keras")
+    except ImportError:
+        # Fallback to tf.keras
+        from tensorflow.keras.layers import InputLayer
+        print("[INFO] Using tf.keras.layers")
 
 # Patch InputLayer to handle batch_shape and type_spec parameters
 original_input_init = InputLayer.__init__
 
 def patched_input_init(self, input_shape=None, batch_size=None, dtype=None,
-                input_tensor=None, sparse=False, name=None, ragged=False,
-                **kwargs):
+                       input_tensor=None, sparse=None, ragged=None, 
+                       type_spec=None, name=None, **kwargs):
+    """
+    Universal patch for InputLayer that handles both batch_shape and type_spec.
+    Works with TensorFlow 2.4+ and Python 3.8-3.9.
+    """
     
-    # Remove type_spec if present (not supported in TF 2.4)
-    if 'type_spec' in kwargs:
-        type_spec = kwargs.pop('type_spec')
-        print(f"[PATCH] Removed type_spec: {type_spec}")
-
+    # Remove type_spec if present (not supported in older TF)
+    if type_spec is not None:
+        print(f"[PATCH] Intercepted type_spec parameter")
+        # Ignore it - don't pass to original init
+    
     # Handle batch_shape parameter
     if 'batch_shape' in kwargs:
         batch_shape = kwargs.pop('batch_shape')
-        print(f"[PATCH] Removed batch_shape: {batch_shape}")
-
+        print(f"[PATCH] Intercepted batch_shape: {batch_shape}")
+        
         if input_shape is None and batch_shape is not None:
             input_shape = batch_shape[1:]
             if batch_size is None:
                 batch_size = batch_shape[0]
-
-    return original_input_init(self, input_shape=input_shape, batch_size=batch_size,
-                              dtype=dtype, input_tensor=input_tensor, sparse=sparse,
-                              name=name, ragged=ragged, **kwargs)
+    
+    # Remove any other unsupported kwargs
+    unsupported = ['type_spec', 'batch_shape']
+    for key in unsupported:
+        if key in kwargs:
+            removed = kwargs.pop(key)
+            print(f"[PATCH] Removed unsupported kwarg: {key}={removed}")
+    
+    # Build clean kwargs for original init
+    clean_kwargs = {
+        'input_shape': input_shape,
+        'batch_size': batch_size,
+        'dtype': dtype,
+        'name': name,
+    }
+    
+    # Only add optional parameters if they're not None
+    if input_tensor is not None:
+        clean_kwargs['input_tensor'] = input_tensor
+    if sparse is not None:
+        clean_kwargs['sparse'] = sparse
+    if ragged is not None:
+        clean_kwargs['ragged'] = ragged
+    
+    # Add any remaining kwargs
+    clean_kwargs.update(kwargs)
+    
+    # Call original init with clean kwargs
+    try:
+        return original_input_init(self, **clean_kwargs)
+    except TypeError as e:
+        # If still fails, try minimal kwargs
+        print(f"[PATCH] Fallback to minimal kwargs due to: {e}")
+        minimal_kwargs = {
+            'input_shape': input_shape,
+            'batch_size': batch_size,
+            'dtype': dtype,
+            'name': name,
+        }
+        return original_input_init(self, **minimal_kwargs)
 
 InputLayer.__init__ = patched_input_init
-print("[INFO] Patch applied successfully!")
+print("[INFO] Universal compatibility patch applied successfully!")
 
 from tensorflow.keras import layers
-
-print(f"[INFO] TensorFlow {tf.__version__} loaded with compatibility patch")
 
 class InstanceNormalization(layers.Layer):
     def __init__(self, epsilon=1e-5, **kwargs):
@@ -84,7 +138,7 @@ class InstanceNormalization(layers.Layer):
 
 def load_models():
     print("\n" + "="*70)
-    print("[INFO] CHECKPOINT 652 LOADER (TensorFlow 2.4 + Compatibility Patch)")
+    print("[INFO] CHECKPOINT 652 LOADER (Universal Compatibility)")
     print("="*70)
     
     file_ids = {
@@ -117,7 +171,7 @@ def load_models():
             file_size = os.path.getsize(model_file) / (1024 * 1024)
             print(f"[INFO] Downloaded: {file_size:.1f} MB")
             
-            print(f"[INFO] Loading model with patched TensorFlow 2.4...")
+            print(f"[INFO] Loading model with patched Keras...")
             model = tf.keras.models.load_model(
                 model_file,
                 custom_objects={'InstanceNormalization': InstanceNormalization},
@@ -177,7 +231,8 @@ def health():
         'generators': list(generators.keys()),
         'checkpoint': '652',
         'tensorflow_version': tf.__version__,
-        'version': 'v11.1-type-spec-fix'
+        'python_version': os.sys.version.split()[0],
+        'version': 'v11.2-universal-patch'
     })
 
 @app.route('/convert', methods=['POST'])
