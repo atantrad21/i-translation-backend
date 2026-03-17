@@ -1,8 +1,8 @@
 flask==2.3.0
 flask-cors==4.0.0
-tensorflow==2.10.1
+tensorflow==2.4.1
 requests==2.31.0
 gunicorn==20.1.0
-h5py==3.7.0
-pillow==9.5.0
-numpy==1.23.5
+h5py==2.10.0
+pillow==8.4.0
+numpy==1.19.5
