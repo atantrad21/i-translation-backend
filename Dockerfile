@@ -1,21 +1,29 @@
-FROM python:3.9-slim
+# Must be Python 3.10 for TensorFlow 2.10 compatibility
+FROM python:3.10-slim
 
+# Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies required for OpenCV/Pillow and downloading tools
 RUN apt-get update && apt-get install -y \
-    git \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python dependencies
+# Copy requirements first (to leverage Docker cache)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY app.py .
+# Install Python dependencies
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Expose port
+# Copy the rest of the application code
+COPY . .
+
+# Expose the port Flask/Gunicorn will run on
 EXPOSE 7860
 
-# Run the application
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:7860", "--timeout", "600", "--workers", "1"]
+# Command to run the application using Gunicorn for production
+CMD ["gunicorn", "--bind", "0.0.0.0:7860", "--workers", "1", "--timeout", "120", "app:app"]
