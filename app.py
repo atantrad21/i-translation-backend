@@ -1,8 +1,8 @@
 """
 I-Translation Medical Image Converter - Backend API
-Version: v11.2 - Universal Keras compatibility patch
+Version: v12.0 - TensorFlow 2.10+ (Clean, No Patches Needed)
 Checkpoint: 652
-Works with TensorFlow 2.4+ and Python 3.8-3.9
+Native compatibility with models saved in TensorFlow 2.10+
 """
 
 from flask import Flask, request, jsonify
@@ -13,96 +13,11 @@ import os
 import io
 import requests
 import base64
-
-print("[INFO] Applying Universal Keras compatibility patch...")
-print(f"[INFO] Python version: {os.sys.version}")
-
 import tensorflow as tf
+
+print(f"[INFO] Python version: {os.sys.version}")
 print(f"[INFO] TensorFlow version: {tf.__version__}")
-
-# Universal patch that works with both old and new Keras
-try:
-    # Try new Keras (TF 2.16+)
-    from keras.engine.input_layer import InputLayer
-    print("[INFO] Using standalone Keras")
-except ImportError:
-    try:
-        # Try TF integrated Keras (TF 2.4-2.15)
-        from tensorflow.python.keras.engine.input_layer import InputLayer
-        print("[INFO] Using TensorFlow integrated Keras")
-    except ImportError:
-        # Fallback to tf.keras
-        from tensorflow.keras.layers import InputLayer
-        print("[INFO] Using tf.keras.layers")
-
-# Patch InputLayer to handle batch_shape and type_spec parameters
-original_input_init = InputLayer.__init__
-
-def patched_input_init(self, input_shape=None, batch_size=None, dtype=None,
-                       input_tensor=None, sparse=None, ragged=None, 
-                       type_spec=None, name=None, **kwargs):
-    """
-    Universal patch for InputLayer that handles both batch_shape and type_spec.
-    Works with TensorFlow 2.4+ and Python 3.8-3.9.
-    """
-    
-    # Remove type_spec if present (not supported in older TF)
-    if type_spec is not None:
-        print(f"[PATCH] Intercepted type_spec parameter")
-        # Ignore it - don't pass to original init
-    
-    # Handle batch_shape parameter
-    if 'batch_shape' in kwargs:
-        batch_shape = kwargs.pop('batch_shape')
-        print(f"[PATCH] Intercepted batch_shape: {batch_shape}")
-        
-        if input_shape is None and batch_shape is not None:
-            input_shape = batch_shape[1:]
-            if batch_size is None:
-                batch_size = batch_shape[0]
-    
-    # Remove any other unsupported kwargs
-    unsupported = ['type_spec', 'batch_shape']
-    for key in unsupported:
-        if key in kwargs:
-            removed = kwargs.pop(key)
-            print(f"[PATCH] Removed unsupported kwarg: {key}={removed}")
-    
-    # Build clean kwargs for original init
-    clean_kwargs = {
-        'input_shape': input_shape,
-        'batch_size': batch_size,
-        'dtype': dtype,
-        'name': name,
-    }
-    
-    # Only add optional parameters if they're not None
-    if input_tensor is not None:
-        clean_kwargs['input_tensor'] = input_tensor
-    if sparse is not None:
-        clean_kwargs['sparse'] = sparse
-    if ragged is not None:
-        clean_kwargs['ragged'] = ragged
-    
-    # Add any remaining kwargs
-    clean_kwargs.update(kwargs)
-    
-    # Call original init with clean kwargs
-    try:
-        return original_input_init(self, **clean_kwargs)
-    except TypeError as e:
-        # If still fails, try minimal kwargs
-        print(f"[PATCH] Fallback to minimal kwargs due to: {e}")
-        minimal_kwargs = {
-            'input_shape': input_shape,
-            'batch_size': batch_size,
-            'dtype': dtype,
-            'name': name,
-        }
-        return original_input_init(self, **minimal_kwargs)
-
-InputLayer.__init__ = patched_input_init
-print("[INFO] Universal compatibility patch applied successfully!")
+print("[INFO] No compatibility patches needed - using native TF 2.10+")
 
 from tensorflow.keras import layers
 
@@ -138,7 +53,7 @@ class InstanceNormalization(layers.Layer):
 
 def load_models():
     print("\n" + "="*70)
-    print("[INFO] CHECKPOINT 652 LOADER (Universal Compatibility)")
+    print("[INFO] CHECKPOINT 652 LOADER (TensorFlow 2.10+ Native)")
     print("="*70)
     
     file_ids = {
@@ -171,7 +86,7 @@ def load_models():
             file_size = os.path.getsize(model_file) / (1024 * 1024)
             print(f"[INFO] Downloaded: {file_size:.1f} MB")
             
-            print(f"[INFO] Loading model with patched Keras...")
+            print(f"[INFO] Loading model with TensorFlow {tf.__version__}...")
             model = tf.keras.models.load_model(
                 model_file,
                 custom_objects={'InstanceNormalization': InstanceNormalization},
@@ -232,7 +147,7 @@ def health():
         'checkpoint': '652',
         'tensorflow_version': tf.__version__,
         'python_version': os.sys.version.split()[0],
-        'version': 'v11.2-universal-patch'
+        'version': 'v12.0-tensorflow-2.10-native'
     })
 
 @app.route('/convert', methods=['POST'])
@@ -254,23 +169,19 @@ def convert_image():
             image_bytes = image_file.read()
             input_tensor = preprocess_image(image_bytes)
             
-            # Select generators based on conversion type
             if conversion_type == 'ct_to_mri':
-                # CT to MRI: Use generators G and I
                 gen_outputs = {}
                 if 'G' in generators:
                     gen_outputs['G'] = generators['G'](input_tensor, training=False)
                 if 'I' in generators:
                     gen_outputs['I'] = generators['I'](input_tensor, training=False)
-            else:  # mri_to_ct
-                # MRI to CT: Use generators F and J
+            else:
                 gen_outputs = {}
                 if 'F' in generators:
                     gen_outputs['F'] = generators['F'](input_tensor, training=False)
                 if 'J' in generators:
                     gen_outputs['J'] = generators['J'](input_tensor, training=False)
             
-            # Convert all generator outputs to images
             for gen_name, prediction in gen_outputs.items():
                 output_img = postprocess_image(prediction.numpy())
                 
