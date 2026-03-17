@@ -7,6 +7,7 @@ Native compatibility with models saved in TensorFlow 2.10+
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import gdown
 import numpy as np
 from PIL import Image
 import os
@@ -52,11 +53,18 @@ class InstanceNormalization(layers.Layer):
         return config
 
 def download_from_gdrive(file_id, destination):
-    """Safely downloads large files from Google Drive bypassing the virus scan warning."""
-    url = "https://docs.google.com/uc?export=download"
-    session = requests.Session()
-    response = session.get(url, params={'id': file_id}, stream=True)
-    
+    """Safely downloads large files from Google Drive using gdown."""
+    try:
+        # gdown automatically handles the virus scan confirmation
+        gdown.download(id=file_id, output=destination, quiet=False)
+        
+        # Verify the file actually downloaded and isn't empty
+        if os.path.exists(destination) and os.path.getsize(destination) > 10000:
+            return True
+        return False
+    except Exception as e:
+        print(f"[ERROR] gdown failed: {str(e)}")
+        return False
     # Check for the confirmation token in cookies
     token = None
     for key, value in response.cookies.items():
