@@ -1,6 +1,6 @@
 """
 I-Translation Medical Image Converter - Backend API
-Version: v12.0 - TensorFlow 2.10+ (Clean, No Patches Needed)
+Version: v12.1 - TensorFlow 2.10+ (Clean, No Patches Needed)
 Checkpoint: 652
 Native compatibility with models saved in TensorFlow 2.10+
 """
@@ -10,12 +10,13 @@ from flask_cors import CORS
 import numpy as np
 from PIL import Image
 import os
+import sys
 import io
 import requests
 import base64
 import tensorflow as tf
 
-print(f"[INFO] Python version: {os.sys.version}")
+print(f"[INFO] Python version: {sys.version}")
 print(f"[INFO] TensorFlow version: {tf.__version__}")
 print("[INFO] No compatibility patches needed - using native TF 2.10+")
 
@@ -51,6 +52,31 @@ class InstanceNormalization(layers.Layer):
         config.update({'epsilon': self.epsilon})
         return config
 
+def download_from_gdrive(file_id, destination):
+    """Safely downloads large files from Google Drive bypassing the virus scan warning."""
+    url = "https://docs.google.com/uc?export=download"
+    session = requests.Session()
+    response = session.get(url, params={'id': file_id}, stream=True)
+    
+    # Check for the confirmation token in cookies
+    token = None
+    for key, value in response.cookies.items():
+        if key.startswith('download_warning'):
+            token = value
+            break
+            
+    if token:
+        params = {'id': file_id, 'confirm': token}
+        response = session.get(url, params=params, stream=True)
+
+    if response.status_code == 200:
+        with open(destination, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=32768):
+                if chunk:
+                    f.write(chunk)
+        return True
+    return False
+
 def load_models():
     print("\n" + "="*70)
     print("[INFO] CHECKPOINT 652 LOADER (TensorFlow 2.10+ Native)")
@@ -70,18 +96,14 @@ def load_models():
             print(f"\n[INFO] Processing Generator {name}...")
             print(f"[INFO] Downloading from Google Drive...")
             
-            url = f"https://drive.google.com/uc?export=download&id={file_id}"
-            response = requests.get(url, stream=True, timeout=600)
-            
-            if response.status_code != 200:
-                print(f"[ERROR] Download failed: HTTP {response.status_code}")
-                continue
-            
             model_file = f"/tmp/generator_{name.lower()}.h5"
-            with open(model_file, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
+            
+            # Use the robust download function
+            success = download_from_gdrive(file_id, model_file)
+            
+            if not success:
+                print(f"[ERROR] Download failed for Generator {name}.")
+                continue
             
             file_size = os.path.getsize(model_file) / (1024 * 1024)
             print(f"[INFO] Downloaded: {file_size:.1f} MB")
@@ -99,7 +121,7 @@ def load_models():
             print(f"          Output: {model.output_shape}")
             
             generators[name] = model
-            os.remove(model_file)
+            os.remove(model_file) # Clean up after loading to save space
                 
         except Exception as e:
             print(f"[ERROR] Generator {name} failed: {str(e)}")
@@ -121,7 +143,7 @@ print(f"[INFO] Initialization complete. Loaded: {len(generators)}/4 generators\n
 
 app = Flask(__name__)
 CORS(app)
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024 # 10GB limit
 
 def preprocess_image(image_bytes):
     img = Image.open(io.BytesIO(image_bytes)).convert('L')
@@ -146,17 +168,16 @@ def health():
         'generators': list(generators.keys()),
         'checkpoint': '652',
         'tensorflow_version': tf.__version__,
-        'python_version': os.sys.version.split()[0],
-        'version': 'v12.0-tensorflow-2.10-native'
+        'python_version': sys.version.split()[0],
+        'version': 'v12.1-tensorflow-2.10-native'
     })
 
 @app.route('/convert', methods=['POST'])
 def convert_image():
     if len(generators) != 4:
-        return jsonify({'error': 'Models not loaded yet, please wait'}), 503
+        return jsonify({'error': 'Models not loaded yet or failed to load, please check server logs.'}), 503
     
     conversion_type = request.form.get('type', 'ct_to_mri')
-    
     results = {}
     
     for i in range(1, 5):
@@ -169,14 +190,13 @@ def convert_image():
             image_bytes = image_file.read()
             input_tensor = preprocess_image(image_bytes)
             
+            gen_outputs = {}
             if conversion_type == 'ct_to_mri':
-                gen_outputs = {}
                 if 'G' in generators:
                     gen_outputs['G'] = generators['G'](input_tensor, training=False)
                 if 'I' in generators:
                     gen_outputs['I'] = generators['I'](input_tensor, training=False)
             else:
-                gen_outputs = {}
                 if 'F' in generators:
                     gen_outputs['F'] = generators['F'](input_tensor, training=False)
                 if 'J' in generators:
