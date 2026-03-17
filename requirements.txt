@@ -6,3 +6,4 @@ gunicorn==20.1.0
 h5py==2.10.0
 pillow==8.4.0
 numpy==1.19.5
+gdown==5.1.0
