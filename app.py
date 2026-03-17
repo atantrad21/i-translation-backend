@@ -16,6 +16,7 @@ import io
 import requests
 import base64
 import tensorflow as tf
+from tensorflow.keras import layers
 
 print(f"[INFO] Python version: {sys.version}")
 print(f"[INFO] TensorFlow version: {tf.__version__}")
