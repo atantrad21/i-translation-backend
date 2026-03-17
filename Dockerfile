@@ -1,9 +1,9 @@
-# Downgraded to Python 3.8 to support TensorFlow 2.4 native compatibility
-FROM python:3.8-slim
+# Upgrade to Python 3.10 to support modern TensorFlow 2.16+ (Keras 3)
+FROM python:3.10-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies required for OpenCV/Pillow and gdown
 RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     libsm6 \
