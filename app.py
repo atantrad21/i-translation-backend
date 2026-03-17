@@ -18,8 +18,7 @@ import tensorflow as tf
 
 print(f"[INFO] Python version: {sys.version}")
 print(f"[INFO] TensorFlow version: {tf.__version__}")
-print("[INFO] No compatibility patches needed - using native TF 2.10+")
-
+print("[INFO] Using TensorFlow 2.4.1 for native Checkpoint 652 compatibility")
 from tensorflow.keras import layers
 
 class InstanceNormalization(layers.Layer):
