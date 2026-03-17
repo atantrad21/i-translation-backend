@@ -19,8 +19,7 @@ import tensorflow as tf
 
 print(f"[INFO] Python version: {sys.version}")
 print(f"[INFO] TensorFlow version: {tf.__version__}")
-print("[INFO] Using TensorFlow 2.4.1 for native Checkpoint 652 compatibility")
-from tensorflow.keras import layers
+print("[INFO] Using TensorFlow 2.16.1 (Keras 3) for native Checkpoint 652 compatibility")
 
 class InstanceNormalization(layers.Layer):
     def __init__(self, epsilon=1e-5, **kwargs):
