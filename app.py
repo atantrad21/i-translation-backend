@@ -11,6 +11,7 @@ import os
 import sys
 import io
 import base64
+import cv2
 import gdown
 import tensorflow as tf
 from tensorflow.keras import layers
@@ -100,12 +101,27 @@ CORS(app)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024
 
 def preprocess_image(image_bytes):
+    # 1. Load the image and convert to grayscale
     img = Image.open(io.BytesIO(image_bytes)).convert('L')
-    img = img.resize((64, 64), Image.LANCZOS)
-    img_array = np.array(img, dtype=np.float32)
+    
+    # 2. BUMP RESOLUTION: Scale up to 256x256 for high-quality CycleGAN output
+    img = img.resize((256, 256), Image.LANCZOS)
+    
+    # 3. Convert to a NumPy array for OpenCV processing
+    img_array = np.array(img, dtype=np.uint8)
+    
+    # 4. APPLY CLAHE: Contrast Limited Adaptive Histogram Equalization
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    img_array = clahe.apply(img_array)
+    
+    # 5. Normalize the image array for the AI (-1.0 to 1.0)
+    img_array = img_array.astype(np.float32)
     img_array = (img_array / 127.5) - 1.0
+    
+    # 6. Expand dimensions so it matches the (1, 256, 256, 1) shape the AI expects
     img_array = np.expand_dims(img_array, axis=-1)
     img_array = np.expand_dims(img_array, axis=0)
+    
     return img_array
 
 def postprocess_image(prediction):
