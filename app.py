@@ -121,7 +121,8 @@ def preprocess_image(image_bytes, filename, conversion_type):
     if conversion_type == 'ct_to_mri':
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     else:
-        clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+        # REDUCED from 1.5 to 1.1 to prevent amplifying MRI background static
+        clahe = cv2.createCLAHE(clipLimit=1.1, tileGridSize=(8, 8)) 
         
     img_array = clahe.apply(img_array)
     
@@ -151,11 +152,18 @@ def postprocess_image(prediction, conversion_type):
     # 3. UPSCALE THE OUTPUT TO SPECIFIC SIZE: 217x181 (Width x Height)
     img = img.resize((217, 181), Image.LANCZOS)
     
-    # 4. DYNAMIC DENOISING: Only apply noise removal to MRI -> CT
+    # 4. ADVANCED DENOISING: Wipe out MRI -> CT generated static
     if conversion_type == 'mri_to_ct':
         img_array = np.array(img)
-        denoised_array = cv2.bilateralFilter(img_array, d=7, sigmaColor=50, sigmaSpace=50)
-        return Image.fromarray(denoised_array)
+        
+        # Step A: Non-Local Means Denoising (Kills speckle/static noise)
+        # h=12 controls the strength. Higher = less noise, but slightly softer.
+        clean_array = cv2.fastNlMeansDenoising(img_array, None, h=12, templateWindowSize=7, searchWindowSize=21)
+        
+        # Step B: Light Bilateral Filter (Smooths flat tissue while keeping bone boundaries sharp)
+        final_array = cv2.bilateralFilter(clean_array, d=5, sigmaColor=50, sigmaSpace=50)
+        
+        return Image.fromarray(final_array)
     
     return img
 
