@@ -13,6 +13,7 @@ import io
 import base64
 import cv2
 import gdown
+import pydicom
 import tensorflow as tf
 from tensorflow.keras import layers
 
@@ -100,17 +101,26 @@ app = Flask(__name__)
 CORS(app)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024
 
-def preprocess_image(image_bytes, conversion_type):
-    # 1. Load the image and convert to grayscale
-    img = Image.open(io.BytesIO(image_bytes)).convert('L')
-    img_array = np.array(img, dtype=np.uint8)
-    
-    # 2. DYNAMIC CLAHE: Different contrast limits based on scan type
+def preprocess_image(image_bytes, filename, conversion_type):
+    # 1. Check if the file is a DICOM or a standard image
+    if filename.lower().endswith('.dcm'):
+        # Decode raw DICOM medical data
+        dicom_data = pydicom.dcmread(io.BytesIO(image_bytes))
+        img_array = dicom_data.pixel_array.astype(float)
+        
+        # Normalize the 16-bit medical data down to standard 8-bit (0-255) pixels
+        if img_array.max() > 0:
+            img_array = (np.maximum(img_array, 0) / img_array.max()) * 255.0
+        img_array = np.uint8(img_array)
+    else:
+        # Load standard PNG/JPG
+        img = Image.open(io.BytesIO(image_bytes)).convert('L')
+        img_array = np.array(img, dtype=np.uint8)
+        
+    # 2. DYNAMIC CLAHE
     if conversion_type == 'ct_to_mri':
-        # CT scans can handle stronger contrast to define soft tissues
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     else:
-        # MRIs need softer contrast so we don't amplify black background noise
         clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
         
     img_array = clahe.apply(img_array)
@@ -138,8 +148,8 @@ def postprocess_image(prediction, conversion_type):
     prediction = ((prediction + 1.0) * 127.5).astype(np.uint8)
     img = Image.fromarray(prediction, mode='L')
     
-    # 3. UPSCALE THE OUTPUT
-    img = img.resize((256, 256), Image.LANCZOS)
+    # 3. UPSCALE THE OUTPUT TO SPECIFIC SIZE: 217x181 (Width x Height)
+    img = img.resize((217, 181), Image.LANCZOS)
     
     # 4. DYNAMIC DENOISING: Only apply noise removal to MRI -> CT
     if conversion_type == 'mri_to_ct':
@@ -147,16 +157,7 @@ def postprocess_image(prediction, conversion_type):
         denoised_array = cv2.bilateralFilter(img_array, d=7, sigmaColor=50, sigmaSpace=50)
         return Image.fromarray(denoised_array)
     
-    # For CT -> MRI, return the sharp, untouched image
     return img
-
-@app.route('/health', methods=['GET'])
-def health():
-    return jsonify({
-        'status': 'online',
-        'generators': list(generators.keys()),
-        'models_loaded': len(generators) == 2
-    })
 
 @app.route('/convert', methods=['POST'])
 def convert_image():
@@ -169,10 +170,13 @@ def convert_image():
     conversion_type = request.form.get('type', 'ct_to_mri')
     
     try:
-        image_bytes = request.files['image'].read()
+        # Get both the bytes AND the filename so we know if it's a DICOM
+        image_file = request.files['image']
+        filename = image_file.filename
+        image_bytes = image_file.read()
         
-        # PASS CONVERSION TYPE TO PREPROCESSOR
-        input_tensor = preprocess_image(image_bytes, conversion_type)
+        # Pass the filename into the preprocessor
+        input_tensor = preprocess_image(image_bytes, filename, conversion_type)
         
         # Use G for CT->MRI, and F for MRI->CT
         if conversion_type == 'ct_to_mri':
@@ -180,9 +184,10 @@ def convert_image():
         else:
             prediction = generators['F'](input_tensor, training=False)
         
-        # PASS CONVERSION TYPE TO POSTPROCESSOR
+        # Pass conversion type to postprocessor
         output_img = postprocess_image(prediction.numpy(), conversion_type)
         
+        # Save as PNG
         img_byte_arr = io.BytesIO()
         output_img.save(img_byte_arr, format='PNG')
         img_byte_arr.seek(0)
@@ -191,6 +196,8 @@ def convert_image():
         return jsonify({'translated_image': img_base64})
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
