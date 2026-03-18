@@ -104,32 +104,40 @@ def preprocess_image(image_bytes):
     # 1. Load the image and convert to grayscale
     img = Image.open(io.BytesIO(image_bytes)).convert('L')
     
-    # 2. BUMP RESOLUTION: Scale up to 256x256 for high-quality CycleGAN output
-    img = img.resize((256, 256), Image.LANCZOS)
-    
-    # 3. Convert to a NumPy array for OpenCV processing
+    # 2. Convert to a NumPy array for OpenCV processing
     img_array = np.array(img, dtype=np.uint8)
     
-    # 4. APPLY CLAHE: Contrast Limited Adaptive Histogram Equalization
+    # 3. APPLY CLAHE: Boost medical contrast BEFORE resizing
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     img_array = clahe.apply(img_array)
     
+    # 4. Convert back to Image and DOWNSIZE to 64x64 (Mandatory for your model)
+    img = Image.fromarray(img_array)
+    img = img.resize((64, 64), Image.LANCZOS)
+    
     # 5. Normalize the image array for the AI (-1.0 to 1.0)
-    img_array = img_array.astype(np.float32)
+    img_array = np.array(img, dtype=np.float32)
     img_array = (img_array / 127.5) - 1.0
     
-    # 6. Expand dimensions so it matches the (1, 256, 256, 1) shape the AI expects
+    # 6. Expand dimensions so it matches (1, 64, 64, 1)
     img_array = np.expand_dims(img_array, axis=-1)
     img_array = np.expand_dims(img_array, axis=0)
     
     return img_array
 
 def postprocess_image(prediction):
+    # 1. Strip the batch and channel dimensions
     prediction = np.squeeze(prediction, axis=0)
     prediction = np.squeeze(prediction, axis=-1)
+    
+    # 2. De-normalize back to standard pixel values (0-255)
     prediction = ((prediction + 1.0) * 127.5).astype(np.uint8)
-    return Image.fromarray(prediction, mode='L')
-
+    img = Image.fromarray(prediction, mode='L')
+    
+    # 3. UPSCALE THE OUTPUT: Stretch the 64x64 result up to 256x256 for display
+    img = img.resize((256, 256), Image.LANCZOS)
+    
+    return img
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({
