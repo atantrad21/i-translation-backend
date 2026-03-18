@@ -100,32 +100,36 @@ app = Flask(__name__)
 CORS(app)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024
 
-def preprocess_image(image_bytes):
+def preprocess_image(image_bytes, conversion_type):
     # 1. Load the image and convert to grayscale
     img = Image.open(io.BytesIO(image_bytes)).convert('L')
-    
-    # 2. Convert to a NumPy array for OpenCV processing
     img_array = np.array(img, dtype=np.uint8)
     
-    # 3. APPLY CLAHE: Boost medical contrast BEFORE resizing
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    # 2. DYNAMIC CLAHE: Different contrast limits based on scan type
+    if conversion_type == 'ct_to_mri':
+        # CT scans can handle stronger contrast to define soft tissues
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    else:
+        # MRIs need softer contrast so we don't amplify black background noise
+        clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+        
     img_array = clahe.apply(img_array)
     
-    # 4. Convert back to Image and DOWNSIZE to 64x64 (Mandatory for your model)
+    # 3. Downsize to 64x64 (Mandatory for your model)
     img = Image.fromarray(img_array)
     img = img.resize((64, 64), Image.LANCZOS)
     
-    # 5. Normalize the image array for the AI (-1.0 to 1.0)
+    # 4. Normalize the image array for the AI (-1.0 to 1.0)
     img_array = np.array(img, dtype=np.float32)
     img_array = (img_array / 127.5) - 1.0
     
-    # 6. Expand dimensions so it matches (1, 64, 64, 1)
+    # 5. Expand dimensions
     img_array = np.expand_dims(img_array, axis=-1)
     img_array = np.expand_dims(img_array, axis=0)
     
     return img_array
 
-def postprocess_image(prediction):
+def postprocess_image(prediction, conversion_type):
     # 1. Strip the batch and channel dimensions
     prediction = np.squeeze(prediction, axis=0)
     prediction = np.squeeze(prediction, axis=-1)
@@ -134,10 +138,18 @@ def postprocess_image(prediction):
     prediction = ((prediction + 1.0) * 127.5).astype(np.uint8)
     img = Image.fromarray(prediction, mode='L')
     
-    # 3. UPSCALE THE OUTPUT: Stretch the 64x64 result up to 256x256 for display
+    # 3. UPSCALE THE OUTPUT
     img = img.resize((256, 256), Image.LANCZOS)
     
+    # 4. DYNAMIC DENOISING: Only apply noise removal to MRI -> CT
+    if conversion_type == 'mri_to_ct':
+        img_array = np.array(img)
+        denoised_array = cv2.bilateralFilter(img_array, d=7, sigmaColor=50, sigmaSpace=50)
+        return Image.fromarray(denoised_array)
+    
+    # For CT -> MRI, return the sharp, untouched image
     return img
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({
@@ -158,7 +170,9 @@ def convert_image():
     
     try:
         image_bytes = request.files['image'].read()
-        input_tensor = preprocess_image(image_bytes)
+        
+        # PASS CONVERSION TYPE TO PREPROCESSOR
+        input_tensor = preprocess_image(image_bytes, conversion_type)
         
         # Use G for CT->MRI, and F for MRI->CT
         if conversion_type == 'ct_to_mri':
@@ -166,7 +180,9 @@ def convert_image():
         else:
             prediction = generators['F'](input_tensor, training=False)
         
-        output_img = postprocess_image(prediction.numpy())
+        # PASS CONVERSION TYPE TO POSTPROCESSOR
+        output_img = postprocess_image(prediction.numpy(), conversion_type)
+        
         img_byte_arr = io.BytesIO()
         output_img.save(img_byte_arr, format='PNG')
         img_byte_arr.seek(0)
